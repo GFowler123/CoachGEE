@@ -2330,15 +2330,18 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     const field=CFIELD[metric]
     const ls=(ex.loggedSets||[]).find(s=>s.setNumber===setNum)
     const val=ls&&ls[field]!=null?ls[field]:''
+    const isPrimary=(metric==='reps'||metric==='time')
+    const weightLogged=!!(ls && ls.completedLoad!=null && String(ls.completedLoad).trim()!=='')
+    const shown=(isPrimary && (val===''||val==null)) ? (target||'') : val
+    const confirmed=(val!==''&&val!=null) ? true : (isPrimary && weightLogged)
     return (
       <input
-        key={ex.id+'-'+setNum+'-'+metric+'-'+val}
-        defaultValue={val}
+        key={ex.id+'-'+setNum+'-'+metric+'-'+String(val)+'-'+(confirmed?'c':'g')}
+        defaultValue={shown}
         placeholder={target||''}
         inputMode={(metric==='time'||metric==='band')?'text':'decimal'}
-        onFocus={e=>{ if(!e.target.value && target) e.target.value=target }}
-        onBlur={e=>{ if(e.target.value!==String(val)) commitSet(ex.id,setNum,field,e.target.value) }}
-        style={{flex:1,minWidth:0,width:'100%',background:C.midnight,border:`1px solid ${C.border}`,borderBottom:`2px solid ${color}66`,borderRadius:7,padding:'10px 4px',color:val?C.white:C.dim,fontSize:15,fontWeight:600,textAlign:'center',outline:'none',boxSizing:'border-box'}}
+        onBlur={e=>{ const v=e.target.value; if(v!==String(shown)) commitSet(ex.id,setNum,field,v) }}
+        style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:confirmed?'#0F1115':'#8A92A0',fontSize:15,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:confirmed?'#0F1115':'#8A92A0',caretColor:'#0F1115'}}
       />
     )
   }
