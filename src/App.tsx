@@ -1482,6 +1482,58 @@ function ClientsView({ clients, programs, addClient, updateClient, deleteClient,
 // ─── CLIENT DETAIL ────────────────────────────────────────────────────────────
 const BLANK_PROG = { name:'', goal:'', phase:'', status:'current', notes:'' }
 
+const makeTempPw = (c) => {
+  const parts = (c.name||'').toLowerCase().replace(/[^a-z\\s]/g,'').split(/\\s+/).filter(Boolean)
+  let pw = parts.join('.') || 'client'
+  while(pw.length<8) pw += Math.floor(Math.random()*10)
+  return pw
+}
+function ClientAccessPanel({ client, updateClient }) {
+  const [email, setEmail] = useState(client.email||'')
+  const [busy, setBusy] = useState(false)
+  const [ok, setOk] = useState(false)
+  const [msg, setMsg] = useState('')
+  const hasLogin = !!client.auth_user_id
+  const createLogin = async () => {
+    if(busy) return
+    const e = (email||'').trim().toLowerCase()
+    if(!e || !e.includes('@')){ setOk(false); setMsg('Enter a valid email address.'); return }
+    setBusy(true); setMsg('')
+    try {
+      const tempPw = makeTempPw(client)
+      const data = await sb.signUp(e, tempPw)
+      const newId = (data && data.user && data.user.id) || (data && data.id)
+      if(newId){
+        updateClient(client.id,{auth_user_id:newId, email:e})
+        setOk(true); setMsg('Login created. Email: '+e+'  -  Temporary password: '+tempPw+'  (give these to your client)')
+      } else {
+        setOk(false); setMsg((data && (data.msg||data.error_description||data.error)) || 'Could not create - this email may already be registered.')
+      }
+    } catch(err){ setOk(false); setMsg('Error: '+((err && err.message)||'failed')) }
+    finally{ setBusy(false) }
+  }
+  return (
+    <Card style={{marginBottom:16,borderColor:C.amber+'30'}}>
+      <Row style={{alignItems:'center',gap:8}}>
+        <Icon name="user" size={15} color={C.amber}/>
+        <span style={{fontSize:12,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.04em'}}>CLIENT APP ACCESS</span>
+        {hasLogin && <span style={{fontSize:10,fontWeight:700,color:C.green,background:C.green+'1A',borderRadius:4,padding:'2px 7px'}}>ACTIVE</span>}
+      </Row>
+      {hasLogin ? (
+        <p style={{fontSize:12,color:C.muted,margin:'8px 0 0'}}>This client can log in with <strong style={{color:C.white}}>{client.email}</strong> on their own phone and will see only their own training.</p>
+      ) : (
+        <div style={{marginTop:10}}>
+          <p style={{fontSize:12,color:C.muted,margin:'0 0 8px'}}>Create a login so this client can use the app on their own phone.</p>
+          <Row style={{gap:8,flexWrap:'wrap',alignItems:'center'}}>
+            <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="client@email.com" style={{flex:1,minWidth:160,background:C.midnight,border:'1px solid '+C.border,borderRadius:7,padding:'9px 11px',color:C.white,fontSize:13,outline:'none'}}/>
+            <Btn label={busy?'Creating...':'Create login'} small onClick={createLogin}/>
+          </Row>
+        </div>
+      )}
+      {msg && <p style={{fontSize:12,color:ok?C.green:C.orange,margin:'10px 0 0',fontWeight:600,wordBreak:'break-word'}}>{msg}</p>}
+    </Card>
+  )
+}
 function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram, updateProgram, deleteProgram, saving, go }) {
   const client = clients.find(c=>c.id===clientId)
   const clientProgs = [...programs.filter(p=>p.client_id===clientId)]
@@ -2330,15 +2382,18 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     const field=CFIELD[metric]
     const ls=(ex.loggedSets||[]).find(s=>s.setNumber===setNum)
     const val=ls&&ls[field]!=null?ls[field]:''
+    const isPrimary=(metric==='reps'||metric==='time')
+    const weightLogged=!!(ls && ls.completedLoad!=null && String(ls.completedLoad).trim()!=='')
+    const shown=(isPrimary && (val===''||val==null)) ? (target||'') : val
+    const confirmed=(val!==''&&val!=null) ? true : (isPrimary && weightLogged)
     return (
       <input
-        key={ex.id+'-'+setNum+'-'+metric+'-'+val}
-        defaultValue={val}
+        key={ex.id+'-'+setNum+'-'+metric+'-'+String(val)+'-'+(confirmed?'c':'g')}
+        defaultValue={shown}
         placeholder={target||''}
         inputMode={(metric==='time'||metric==='band')?'text':'decimal'}
-        onFocus={e=>{ if(!e.target.value && target) e.target.value=target }}
-        onBlur={e=>{ if(e.target.value!==String(val)) commitSet(ex.id,setNum,field,e.target.value) }}
-        style={{flex:1,minWidth:0,width:'100%',background:C.midnight,border:`1px solid ${C.border}`,borderBottom:`2px solid ${color}66`,borderRadius:7,padding:'10px 4px',color:val?C.white:C.dim,fontSize:15,fontWeight:600,textAlign:'center',outline:'none',boxSizing:'border-box'}}
+        onBlur={e=>{ const v=e.target.value; if(v!==String(shown)) commitSet(ex.id,setNum,field,v) }}
+        style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:confirmed?'#0F1115':'#8A92A0',fontSize:15,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:confirmed?'#0F1115':'#8A92A0',caretColor:'#0F1115'}}
       />
     )
   }
@@ -4500,6 +4555,7 @@ function ClientDashboard({clientId,...props}){
             <Btn label="Edit Client" variant="secondary" small onClick={()=>go('editclient',{clientId})}/>
           </Row>
         </Row>
+        <ClientAccessPanel client={client} updateClient={props.updateClient}/>
         <Row style={{gap:0,marginBottom:0}}>
           {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{padding:'10px 18px',border:'none',borderBottom:`2px solid ${tab===t.id?C.amber:'transparent'}`,background:'transparent',color:tab===t.id?C.amber:C.muted,fontSize:13,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>{t.l}</button>))}
         </Row>
@@ -5834,7 +5890,7 @@ function CLabel({ children, color=C.amber, icon }) {
   )
 }
 
-function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead }) {
+function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
@@ -5923,7 +5979,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
     if(sess) {
       return (
         <div style={{background:C.bg,minHeight:'100vh',color:C.white,fontSize:14}}>
-          <PreviewBanner client={client} onExit={onExit}/>
+          <PreviewBanner client={client} onExit={onExit} isRealClient={isRealClient}/>
           <div style={{maxWidth:560, margin:'0 auto', padding:'16px 14px 90px'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
               <button onClick={()=>setOpenSessionId(null)} style={{background:'none',border:'none',color:C.amber,cursor:'pointer',fontSize:13,fontWeight:600,padding:'6px 0',display:'flex',alignItems:'center',gap:5}}>
@@ -5945,7 +6001,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
 
   return (
     <div style={{background:C.bg,minHeight:'100vh',color:C.white,fontSize:14}}>
-      <PreviewBanner client={client} onExit={onExit}/>
+      <PreviewBanner client={client} onExit={onExit} isRealClient={isRealClient}/>
       <div style={{maxWidth:560, margin:'0 auto', padding:'20px 16px 96px'}}>
 
         {/* ────── HOME ────── */}
@@ -6315,14 +6371,18 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
 }
 
 // Preview banner — fixed at top
-function PreviewBanner({ client, onExit }) {
+function PreviewBanner({ client, onExit, isRealClient=false }) {
   return (
     <div style={{background:`linear-gradient(180deg, ${C.amber}25 0%, ${C.amber}10 100%)`,borderBottom:`1px solid ${C.amber}40`,padding:'10px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,position:'sticky',top:0,zIndex:50,backdropFilter:'blur(8px)'}}>
       <div style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
-        <span style={{fontSize:9,fontWeight:700,color:C.amber,textTransform:'uppercase',letterSpacing:'0.1em',background:`${C.amber}20`,padding:'3px 7px',borderRadius:4,flexShrink:0}}>Preview</span>
-        <span style={{fontSize:12,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Viewing as <strong>{client.name}</strong></span>
+        {isRealClient
+          ? <span style={{fontSize:13,color:C.white,fontWeight:700,fontFamily:'Space Grotesk,sans-serif',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Hi {(client.name||'').split(' ')[0]}</span>
+          : <>
+            <span style={{fontSize:9,fontWeight:700,color:C.amber,textTransform:'uppercase',letterSpacing:'0.1em',background:`${C.amber}20`,padding:'3px 7px',borderRadius:4,flexShrink:0}}>Preview</span>
+            <span style={{fontSize:12,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Viewing as <strong>{client.name}</strong></span>
+          </>}
       </div>
-      <button onClick={onExit} style={{background:C.amber,color:C.bg,border:'none',borderRadius:6,padding:'6px 12px',fontSize:11,fontWeight:700,cursor:'pointer',flexShrink:0}}>Exit Preview</button>
+      <button onClick={onExit} style={{background:C.amber,color:C.bg,border:'none',borderRadius:6,padding:'6px 12px',fontSize:11,fontWeight:700,cursor:'pointer',flexShrink:0}}>{isRealClient?'Sign Out':'Exit Preview'}</button>
     </div>
   )
 }
@@ -6733,6 +6793,29 @@ function MainApp({ session, onSignOut }) {
         av={analyticsVersion}
       />
     }
+  }
+
+  const loggedInClient = clients.find(c => c.auth_user_id && session.user && session.user.id && c.auth_user_id === session.user.id)
+  if(loggedInClient) {
+    const signOutClient = async()=>{ try{await sb.signOut(token)}catch(e){} localStorage.removeItem('cgee_session'); onSignOut() }
+    return <ClientPreviewApp
+      client={loggedInClient}
+      sessions={sessions.filter(s=>s.client_id===loggedInClient.id)}
+      allSessions={sessions}
+      programs={programs.filter(p=>p.client_id===loggedInClient.id)}
+      weeks={weeks}
+      goals={goals.filter(g=>g.client_id===loggedInClient.id)}
+      measurements={measurements.filter(m=>m.client_id===loggedInClient.id)}
+      messages={messages.filter(m=>m.client_id===loggedInClient.id)}
+      addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned}
+      chats={chats.filter(c=>(c.member_ids||[]).includes(loggedInClient.id))}
+      chatMessages={chatMessages} addChatMessage={addChatMessage}
+      chatUnread={(id)=>chatUnread(id,loggedInClient.id)} markChatRead={(id)=>markChatRead(id,loggedInClient.id)}
+      updateSession={updateSession}
+      onExit={signOutClient}
+      isRealClient={true}
+      av={analyticsVersion}
+    />
   }
 
   return (
