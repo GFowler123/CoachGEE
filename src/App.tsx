@@ -2084,7 +2084,7 @@ function TargetTable({ form, setForm }) {
 }
 const BLANK_SET = { completedLoad:'', completedReps:'', rpe:'', notes:'', skipped:false, bandColour:'' }
 
-function SessionDetail({ sessionId, programId, clientId, clients, programs, weeks, sessions, updateSession, saving, go, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, subs=[], clientMode=false }) {
+function SessionDetail({ sessionId, programId, clientId, clients, programs, weeks, sessions, updateSession, saving, go, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, subs=[], clientMode=false }) {
   const sess   = sessions.find(s=>s.id===sessionId)
   const prog   = programs.find(p=>p.id===programId)
   const client = clients.find(c=>c.id===clientId)
@@ -2378,23 +2378,26 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     else ls.push({id:uid(),setNumber:setNum,[field]:value})
     saveExs(exs.map(x=>x.id===exId?{...x,loggedSets:ls}:x))
   }
-  const ClientBox = ({ ex, setNum, metric, target, color }) => {
+  const ClientBox = ({ ex, setNum, metric, target, color, hint }) => {
     const field=CFIELD[metric]
     const ls=(ex.loggedSets||[]).find(s=>s.setNumber===setNum)
     const val=ls&&ls[field]!=null?ls[field]:''
     const isPrimary=(metric==='reps'||metric==='time')
-    const weightLogged=!!(ls && ls.completedLoad!=null && String(ls.completedLoad).trim()!=='')
-    const shown=(isPrimary && (val===''||val==null)) ? (target||'') : val
-    const confirmed=(val!==''&&val!=null) ? true : (isPrimary && weightLogged)
+    const logged=(val!==''&&val!=null)
+    let shown, col
+    if(logged){ shown=val; col='#0F1115' }
+    else if(isPrimary){ shown=(target||''); col='#0F1115' }
+    else if(hint){ shown=String(hint); col='#B4BCC8' }
+    else { shown=''; col='#8A92A0' }
     return (
       <input
-        key={ex.id+'-'+setNum+'-'+metric+'-'+String(val)+'-'+(confirmed?'c':'g')}
+        key={ex.id+'-'+setNum+'-'+metric+'-'+String(val)+'-'+(logged?'c':'g')+'-'+String(hint||'')}
         defaultValue={shown}
         placeholder={target||''}
         inputMode={(metric==='time'||metric==='band')?'text':'decimal'}
         onFocus={e=>e.target.select()}
         onBlur={e=>{ const v=e.target.value; if(v!==String(shown)) commitSet(ex.id,setNum,field,v) }}
-        style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:confirmed?'#0F1115':'#8A92A0',fontSize:16,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:confirmed?'#0F1115':'#8A92A0',caretColor:'#0F1115'}}
+        style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:col,fontSize:16,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:col,caretColor:'#0F1115'}}
       />
     )
   }
@@ -2409,6 +2412,23 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     const MET={load:{label:'Weight',color:C.c2},rpe:{label:'RPE'},rir:{label:'RIR'},time:{label:'Time'},speed:{label:'Speed'},rpm:{label:'RPM'},distance:{label:'Distance'},power:{label:'Power'},energy:{label:'Energy'},hr:{label:'Heart Rate'},vas:{label:'Pain (VAS)'},band:{label:'Band',color:C.purple}}
     const ORDER=['load','rpe','rir','time','speed','rpm','distance','power','energy','hr','vas','band']
     const extra = ORDER.filter(k=>k!==primary && collect.includes(k) && MET[k] && !(k==='load'&&ex.isWarmup)).map(k=>[k,MET[k].label])
+    const _numFrom=(z)=>{ const mm=String(z==null?'':z).match(/-?\d+(?:\.\d+)?/); return mm?parseFloat(mm[0]):null }
+    let lastWeightHint=null
+    if(!ex.isWarmup && collect.includes('load')){
+      const nm=(x)=>String(x||'').trim().toLowerCase()
+      const names=[nm(ex.name),nm(ex._originalName)].filter(Boolean)
+      const cand=[]
+      ;(sessions||[]).forEach(ss=>{ if(ss.id===sessionId) return
+        ;(safeExercises(ss)||[]).forEach(e2=>{ const en=[nm(e2.name),nm(e2._originalName)].filter(Boolean)
+          if(en.some(x=>names.includes(x))){ (e2.loggedSets||[]).forEach(ls2=>{ const raw=String(ls2.completedLoad||'').trim(); if(/^x/i.test(raw)) return; const L=_numFrom(raw); if(L!=null&&L>0) cand.push({d:getSessionDate(ss,sessions,weeks,programs)||new Date(0),L,R:_numFrom(ls2.completedReps)}) }) }
+        })
+      })
+      if(cand.length){ cand.sort((a,b)=>b.d-a.d); const d0=cand[0].d; const recent=cand.filter(c=>Math.abs(c.d-d0)<86400000); const top=recent.reduce((m,c)=>c.L>m.L?c:m,recent[0])
+        const Rnew=_numFrom(String(ex.reps||'').split('/')[0]); let w=top.L
+        if(top.R&&Rnew&&top.R!==Rnew){ const e1=top.L*(1+top.R/30); w=Math.round((e1/(1+Rnew/30))/2.5)*2.5 }
+        lastWeightHint=(w%1===0?String(w):String(Number(w.toFixed(1))))
+      }
+    }
     const chips=[]
     if(ex.tempo) chips.push(['Tempo',ex.tempo])
     if(ex.rest)  chips.push(['Rest',ex.rest])
@@ -2421,7 +2441,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
       <div key={'r-'+metric} style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
         <span style={{width:58,flexShrink:0,fontSize:10,color:C.faint,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em'}}>{label}</span>
         <div style={{flex:1,display:'flex',gap:6}}>
-          {sets.map(sn=><ClientBox key={metric+sn} ex={ex} setNum={sn} metric={metric} target={perSetTarget(srcFor(metric),sn-1)} color={(MET[metric]&&MET[metric].color)||sectionCol}/>) }
+          {sets.map(sn=><ClientBox key={metric+sn} ex={ex} setNum={sn} metric={metric} target={perSetTarget(srcFor(metric),sn-1)} color={(MET[metric]&&MET[metric].color)||sectionCol} hint={(metric==='load'&&sn===1)?lastWeightHint:null}/>) }
         </div>
       </div>
     )
@@ -2500,10 +2520,10 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         </div>
         <button onClick={()=>{ updateSession(sess.id,{status:'completed',completed_at:new Date().toISOString()}); go&&go('client') }}
           style={{marginTop:18,width:'100%',background:done?C.card:C.amber,color:done?C.green:C.bg,border:done?`1px solid ${C.green}55`:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:14.5,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.03em'}}>
-          <Icon name="check" size={17} color={done?C.green:C.bg}/>{done?'WORKOUT COMPLETE \u2014 TAP TO RE-SUBMIT':'FINISH WORKOUT'}
+          <Icon name="check" size={17} color={done?C.green:C.bg}/>Finish session
         </button>
         <div style={{marginTop:16}}>
-          <SessionMessageBox sessionId={sessionId} clientId={clientId} programId={programId} weekId={sess?.week_id} messages={messages||[]} addMessage={addMessage} replyMessage={replyMessage} markRead={markMsgRead} markActioned={markMsgActioned}/>
+          <SessionMessageBox sessionId={sessionId} clientId={clientId} programId={programId} weekId={sess?.week_id} messages={messages||[]} addMessage={addMessage} replyMessage={replyMessage} markRead={markMsgRead} markActioned={markMsgActioned} editMessage={editMessage} clientMode={true}/>
         </div>
         {historyEx && <ExerciseHistoryModal exerciseName={historyEx} clientId={clientId} sessions={sessions} weeks={weeks} programs={programs} onClose={()=>setHistoryEx(null)}/>}
       </div>
@@ -5607,11 +5627,13 @@ function ExerciseHistoryModal({ exerciseName, clientId, sessions, weeks, program
   )
 }
 
-function SessionMessageBox({ sessionId, clientId, programId, weekId, messages, addMessage, replyMessage, markRead, markActioned }) {
+function SessionMessageBox({ sessionId, clientId, programId, weekId, messages, addMessage, replyMessage, markRead, markActioned, editMessage, clientMode=false }) {
   const sessionMsgs = (messages||[]).filter(m=>m.session_id===sessionId).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))
   const [msg, setMsg] = useState('')
   const [replyId, setReplyId] = useState(null)
   const [replyTxt, setReplyTxt] = useState('')
+  const [editId, setEditId] = useState(null)
+  const [editTxt, setEditTxt] = useState('')
   const submit = () => { if(!msg.trim()) return; addMessage({session_id:sessionId,client_id:clientId,program_id:programId,week_id:weekId,message:msg.trim()}); setMsg('') }
   const sendReply = id => { if(!replyTxt.trim()) return; replyMessage(id,replyTxt.trim()); setReplyId(null); setReplyTxt('') }
   return(
@@ -5622,10 +5644,22 @@ function SessionMessageBox({ sessionId, clientId, programId, weekId, messages, a
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
             <span style={{fontSize:10,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>Client Note</span>
             <span style={{fontSize:10,color:C.faint}}>{new Date(m.created_at).toLocaleDateString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
-            {!m.read_at&&<span style={{fontSize:9,background:`${C.orange}25`,color:C.orange,borderRadius:4,padding:'1px 6px',fontWeight:700}}>UNREAD</span>}
-            {m.actioned_at&&<span style={{fontSize:9,background:`${C.green}20`,color:C.green,borderRadius:4,padding:'1px 6px',fontWeight:700}}>ACTIONED</span>}
+            {clientMode
+              ? <span style={{fontSize:9,background:m.read_at?`${C.green}20`:`${C.faint}22`,color:m.read_at?C.green:C.faint,borderRadius:4,padding:'1px 6px',fontWeight:700}}>{m.read_at?'Read':'Unread'}</span>
+              : <>{!m.read_at&&<span style={{fontSize:9,background:`${C.orange}25`,color:C.orange,borderRadius:4,padding:'1px 6px',fontWeight:700}}>UNREAD</span>}{m.actioned_at&&<span style={{fontSize:9,background:`${C.green}20`,color:C.green,borderRadius:4,padding:'1px 6px',fontWeight:700}}>ACTIONED</span>}</>}
           </div>
-          <p style={{fontSize:13,color:C.white,margin:'0 0 8px',lineHeight:1.5}}>{m.message}</p>
+          {clientMode && editId===m.id ? (
+            <div style={{marginBottom:8}}>
+              <textarea value={editTxt} onChange={e=>setEditTxt(e.target.value)} rows={3} style={{...iS,resize:'vertical',width:'100%',fontSize:13,lineHeight:1.5,marginBottom:8}}/>
+              <div style={{display:'flex',gap:6}}>
+                <Btn label="Save changes" small onClick={()=>{ const t=editTxt.trim(); if(t&&editMessage){ editMessage(m.id,t) } setEditId(null) }} disabled={!editTxt.trim()}/>
+                <Btn label="Cancel" small variant="ghost" onClick={()=>setEditId(null)}/>
+              </div>
+            </div>
+          ) : (
+            <p style={{fontSize:13,color:C.white,margin:'0 0 8px',lineHeight:1.5}}>{m.message}</p>
+          )}
+          {clientMode && editId!==m.id && <button onClick={()=>{setEditId(m.id);setEditTxt(m.message||'')}} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:5,padding:'2px 9px',color:C.faint,fontSize:10,cursor:'pointer',marginBottom:8}}>Edit note</button>}
           {m.reply&&(
             <div style={{background:`${C.c2}12`,border:`1px solid ${C.c2}30`,borderRadius:7,padding:'8px 10px',marginBottom:8}}>
               <div style={{fontSize:9,color:C.c3,fontWeight:700,marginBottom:3}}>COACH REPLY</div>
@@ -5633,9 +5667,9 @@ function SessionMessageBox({ sessionId, clientId, programId, weekId, messages, a
             </div>
           )}
           <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'flex-start'}}>
-            {!m.read_at&&<button onClick={()=>markRead(m.id)} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:5,padding:'2px 8px',color:C.faint,fontSize:10,cursor:'pointer'}}>Mark read</button>}
-            {!m.actioned_at&&<button onClick={()=>markActioned(m.id)} style={{background:'none',border:`1px solid ${C.green}40`,borderRadius:5,padding:'2px 8px',color:C.green,fontSize:10,cursor:'pointer',fontWeight:600}}>Mark actioned</button>}
-            {!m.reply&&(replyId===m.id
+            {!clientMode&&!m.read_at&&<button onClick={()=>markRead(m.id)} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:5,padding:'2px 8px',color:C.faint,fontSize:10,cursor:'pointer'}}>Mark read</button>}
+            {!clientMode&&!m.actioned_at&&<button onClick={()=>markActioned(m.id)} style={{background:'none',border:`1px solid ${C.green}40`,borderRadius:5,padding:'2px 8px',color:C.green,fontSize:10,cursor:'pointer',fontWeight:600}}>Mark actioned</button>}
+            {!clientMode&&!m.reply&&(replyId===m.id
               ?<div style={{display:'flex',gap:6,flex:1,minWidth:200}}>
                 <textarea value={replyTxt} onChange={e=>setReplyTxt(e.target.value)} placeholder="Write a reply…" rows={2} style={{...iS,flex:1,resize:'none',fontSize:12}}></textarea>
                 <div style={{display:'flex',flexDirection:'column',gap:4}}>
@@ -5944,7 +5978,7 @@ function ClientSessionSummary({ sess, programName, status, onResume }){
     </div>
   )
 }
-function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
+function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
@@ -6056,7 +6090,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
               if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} onResume={()=>setSessionFull(true)}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
-              messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned}
+              messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
               go={(view)=>{ if(view==='program'){setOpenSessionId(null);setTab('sessions')} else if(view==='client'){setOpenSessionId(null);setTab('home')} else setOpenSessionId(null) }}/>
               )
             })()}
@@ -6182,7 +6216,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
                   {currentProgram && <span style={{fontSize:12,color:C.muted}}>{currentProgram.name}</span>}
                   {todayDoneSession.sess.focus && <><span style={{color:C.faint}}>·</span><span style={{fontSize:12,color:C.amber,fontWeight:600}}>{todayDoneSession.sess.focus}</span></>}
                 </div>
-                <div style={{background:`${C.green}14`,color:C.green,padding:'12px 16px',borderRadius:9,fontWeight:700,fontSize:13.5,textAlign:'center'}}>View &amp; adjust</div>
+                <div style={{background:`${C.green}14`,color:C.green,padding:'12px 16px',borderRadius:9,fontWeight:700,fontSize:13.5,textAlign:'center'}}>Resume session</div>
               </div>
             </div>
           ) : tomorrowSession ? (
@@ -6755,6 +6789,7 @@ function MainApp({ session, onSignOut }) {
   const replyMessage   = (id,reply) => { setMessages(p=>p.map(m=>m.id===id?{...m,reply}:m)); sb.patch('session_messages',id,{reply},token).catch(e=>setError(e.message)) }
   const markMsgRead    = (id)       => { const at=new Date().toISOString(); setMessages(p=>p.map(m=>m.id===id?{...m,read_at:at}:m)); sb.patch('session_messages',id,{read_at:at},token).catch(e=>setError(e.message)) }
   const markMsgActioned= (id)       => { const at=new Date().toISOString(); setMessages(p=>p.map(m=>m.id===id?{...m,actioned_at:at}:m)); sb.patch('session_messages',id,{actioned_at:at},token).catch(e=>setError(e.message)) }
+  const editMessage    = (id,message)=> { setMessages(p=>p.map(m=>m.id===id?{...m,message,read_at:null}:m)); sb.patch('session_messages',id,{message,read_at:null},token).catch(e=>setError(e.message)) }
   const addChat        = (d) => wrap(async()=>{ const r=await sb.post('chats',{...d,created_at:new Date().toISOString()},token); setChats(p=>[...p,r]); return r })
   const addChatMessage = (d) => wrap(async()=>{ const r=await sb.post('chat_messages',{...d,created_at:new Date().toISOString()},token); setChatMessages(p=>[...p,r]); return r })
   const deleteChat     = (id)=> { setChats(p=>p.filter(c=>c.id!==id)); setChatMessages(p=>p.filter(m=>m.chat_id!==id)); sb.del('chats',id,token).catch(e=>setError(e.message)) }
@@ -6874,7 +6909,7 @@ function MainApp({ session, onSignOut }) {
         goals={goals.filter(g=>g.client_id===previewClientId)}
         measurements={measurements.filter(m=>m.client_id===previewClientId)}
         messages={messages.filter(m=>m.client_id===previewClientId)}
-        addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned}
+        addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
         chats={chats.filter(c=>(c.member_ids||[]).includes(previewClientId))}
         chatMessages={chatMessages} addChatMessage={addChatMessage}
         chatUnread={(id)=>chatUnread(id,previewClientId)} markChatRead={(id)=>markChatRead(id,previewClientId)}
@@ -6897,7 +6932,7 @@ function MainApp({ session, onSignOut }) {
       goals={goals.filter(g=>g.client_id===loggedInClient.id)}
       measurements={measurements.filter(m=>m.client_id===loggedInClient.id)}
       messages={messages.filter(m=>m.client_id===loggedInClient.id)}
-      addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned}
+      addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
       chats={chats.filter(c=>(c.member_ids||[]).includes(loggedInClient.id))}
       chatMessages={chatMessages} addChatMessage={addChatMessage}
       chatUnread={(id)=>chatUnread(id,loggedInClient.id)} markChatRead={(id)=>markChatRead(id,loggedInClient.id)}
