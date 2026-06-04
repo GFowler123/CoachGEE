@@ -346,7 +346,7 @@ const safeExercises = (sess) => {
 // count as done without requiring weight entry
 
 
-const setIsDone = ls => ls && (ls.skipped || !!(ls.completedLoad || ls.completedReps || ls.rpe || ls.notes))
+const setIsDone = ls => !!ls && (ls.manualDone===true || ls.confirmed===true || [ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
 
 function computeSessionStatus(sess) {
   // Manual overrides take priority over computed status
@@ -2374,8 +2374,21 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     const e=exs.find(x=>x.id===exId); if(!e) return
     const ls=[...(e.loggedSets||[])]
     const idx=ls.findIndex(s=>s.setNumber===setNum)
-    if(idx>=0) ls[idx]={...ls[idx],[field]:value}
-    else ls.push({id:uid(),setNumber:setNum,[field]:value})
+    const WORK=['completedReps','completedLoad','completedTime','completedDistance','speed','rpm','power','energy','hr','bandColour']
+    const stamp = o => ({...o, confirmed: WORK.some(f=>o[f]!=null&&String(o[f]).trim()!=='')})
+    if(idx>=0) ls[idx]=stamp({...ls[idx],[field]:value})
+    else ls.push(stamp({id:uid(),setNumber:setNum,[field]:value}))
+    saveExs(exs.map(x=>x.id===exId?{...x,loggedSets:ls}:x))
+  }
+  const setSetDone = (exId,setNum,done) => {
+    const e=exs.find(x=>x.id===exId); if(!e) return
+    const ls=[...(e.loggedSets||[])]
+    const idx=ls.findIndex(s=>s.setNumber===setNum)
+    const base = idx>=0 ? ls[idx] : {id:uid(),setNumber:setNum}
+    let next
+    if(done) next={...base, manualDone:true}
+    else { next={...base, manualDone:false}; delete next.confirmed; delete next.completedReps }
+    if(idx>=0) ls[idx]=next; else ls.push(next)
     saveExs(exs.map(x=>x.id===exId?{...x,loggedSets:ls}:x))
   }
   const ClientBox = ({ ex, setNum, metric, target, color, hint }) => {
@@ -2396,7 +2409,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         placeholder={target||''}
         inputMode={(metric==='time'||metric==='band')?'text':'decimal'}
         onFocus={e=>e.target.select()}
-        onBlur={e=>{ const v=e.target.value; if(v!==String(shown)) commitSet(ex.id,setNum,field,v) }}
+        onBlur={e=>{ const v=e.target.value; const cmp = isPrimary ? String(val) : String(shown); if(v!==cmp) commitSet(ex.id,setNum,field,v) }}
         style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:col,fontSize:16,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:col,caretColor:'#0F1115'}}
       />
     )
@@ -2404,7 +2417,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
   const ClientExRow = ({ ex, sectionCol }) => {
     const N = Math.max(1, parseInt(ex.sets)||1)
     const sets = Array.from({length:N},(_,i)=>i+1)
-    const _setLogged = (sn)=>{ const ls=(ex.loggedSets||[]).find(z=>z.setNumber===sn); if(!ls) return false; if(ls.skipped) return true; const r=ls.completedReps,l=ls.completedLoad; return (r!=null&&String(r).trim()!=='')||(l!=null&&String(l).trim()!=='') }
+    const _setLogged = (sn)=> ex.isWarmup ? true : setIsDone((ex.loggedSets||[]).find(z=>z.setNumber===sn))
     const _exDone = sets.length>0 && sets.every(_setLogged)
     const collect = ex.collect || (ex.isWarmup?['reps']:['reps','load'])
     const primary = (collect.includes('time')||(ex.time&&!ex.reps)) ? 'time' : 'reps'
@@ -2412,6 +2425,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     const MET={load:{label:'Weight',color:C.c2},rpe:{label:'RPE'},rir:{label:'RIR'},time:{label:'Time'},speed:{label:'Speed'},rpm:{label:'RPM'},distance:{label:'Distance'},power:{label:'Power'},energy:{label:'Energy'},hr:{label:'Heart Rate'},vas:{label:'Pain (VAS)'},band:{label:'Band',color:C.purple}}
     const ORDER=['load','rpe','rir','time','speed','rpm','distance','power','energy','hr','vas','band']
     const extra = ORDER.filter(k=>k!==primary && collect.includes(k) && MET[k] && !(k==='load'&&ex.isWarmup)).map(k=>[k,MET[k].label])
+    const HARDM=['load','time','distance','speed','rpm','power','energy','hr','band']; const hasMeasure = collect.some(k=>HARDM.includes(k))
     const _numFrom=(z)=>{ const mm=String(z==null?'':z).match(/-?\d+(?:\.\d+)?/); return mm?parseFloat(mm[0]):null }
     let lastWeightHint=null
     if(!ex.isWarmup && collect.includes('load')){
@@ -2467,6 +2481,17 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         )}
         {metricRow(primaryLabel, primary)}
         {extra.map(([m,lab])=>metricRow(lab, m))}
+        {!hasMeasure && !ex.isWarmup && (
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+            <span style={{width:58,flexShrink:0,fontSize:10,color:C.faint,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em'}}>Done</span>
+            <div style={{flex:1,display:'flex',gap:6}}>
+              {sets.map(sn=>{ const on=_setLogged(sn); return (
+                <button key={'done'+sn} onClick={()=>setSetDone(ex.id,sn,!on)} title={'Mark set '+sn+(on?' not done':' done')} style={{flex:1,height:38,borderRadius:9,border:`1px solid ${on?C.green:C.border}`,background:on?`${C.green}1A`:C.card,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',transition:'all .15s'}}>
+                  {on?<Icon name="check" size={18} color={C.green}/>:<span style={{width:15,height:15,borderRadius:5,border:`1.5px solid ${C.faint}`}}/>}
+                </button>) })}
+            </div>
+          </div>
+        )}
         {chips.length>0&&(
           <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
             {chips.map(([k,v])=><span key={k} style={{fontSize:10.5,color:C.muted,background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:'3px 9px'}}><span style={{color:C.faint}}>{k}</span> {v}</span>)}
