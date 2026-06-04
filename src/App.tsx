@@ -5899,12 +5899,60 @@ function CLabel({ children, color=C.amber, icon }) {
   )
 }
 
+function ClientSessionSummary({ sess, programName, status, onResume }){
+  const exs = safeExercises(sess)
+  const main = exs.filter(e=>!e.isWarmup)
+  const warm = exs.filter(e=>e.isWarmup)
+  const tgt = (src, idx) => { if(src==null) return ''; const parts=String(src).split('/').map(z=>z.trim()).filter(Boolean); return parts.length>1?(parts[Math.min(idx,parts.length-1)]||''):(parts[0]||String(src).trim()) }
+  const meta = status==='complete' ? {label:'Complete', color:C.green, icon:'check'} : status==='inprogress' ? {label:'In progress', color:C.amber, icon:'clock'} : {label:'Not started', color:C.faint, icon:'play'}
+  const btnLabel = status==='notstarted' ? 'Start session' : 'Resume session'
+  return (
+    <div style={{padding:'4px 0 0'}}>
+      <div style={{marginBottom:14}}>
+        <h1 style={{fontSize:22,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'-0.01em',marginBottom:6}}>{sess.name}</h1>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          {programName && <span style={{fontSize:12,color:C.muted}}>{programName}</span>}
+          <span style={{display:'flex',alignItems:'center',gap:5,background:`${meta.color}1A`,color:meta.color,fontSize:11,fontWeight:700,padding:'4px 10px',borderRadius:999}}><Icon name={meta.icon} size={12} color={meta.color}/>{meta.label}</span>
+        </div>
+      </div>
+      <button onClick={onResume} style={{width:'100%',background:C.amber,color:C.bg,border:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:15,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em',marginBottom:18}}>
+        <Icon name="play" size={15} color={C.bg} fill={C.bg}/>{btnLabel}
+      </button>
+      <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>{status==='notstarted'?'Prescribed':'What you hit'}</div>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {main.map(ex=>{
+          const N=Math.max(1,parseInt(ex.sets)||1)
+          const sets=Array.from({length:N},(_,i)=>i+1)
+          return (
+            <div key={ex.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 14px'}}>
+              <div style={{fontSize:14,fontWeight:600,color:C.white,marginBottom:8}}>{ex.name}</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {sets.map(sn=>{
+                  const ls=(ex.loggedSets||[]).find(z=>z.setNumber===sn)
+                  const load=ls&&ls.completedLoad!=null&&String(ls.completedLoad).trim()!==''?String(ls.completedLoad).trim():null
+                  const reps=ls&&ls.completedReps!=null&&String(ls.completedReps).trim()!==''?String(ls.completedReps).trim():null
+                  const logged=!!(load||reps)
+                  const txt=logged?(load&&reps?`${load} × ${reps}`:(reps||load)):(tgt(ex.reps,sn-1)||'—')
+                  return <span key={sn} style={{fontSize:12,fontWeight:700,color:logged?C.white:C.faint,background:logged?`${C.green}14`:C.ink,border:`1px solid ${logged?`${C.green}40`:C.border}`,borderRadius:7,padding:'5px 9px'}}>{txt}</span>
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {warm.length>0 && <div style={{fontSize:11,color:C.faint,marginTop:12,textAlign:'center'}}>+ {warm.length} warm-up movement{warm.length!==1?'s':''}</div>}
+    </div>
+  )
+}
 function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
   const chatsUnreadTotal = (chats||[]).reduce((n,c)=>n+(typeof chatUnread==='function'?chatUnread(c.id):0),0)
   const [openSessionId, setOpenSessionId] = useState(null)
+  const [weekOffset, setWeekOffset] = useState(0)
+  const [sessionFull, setSessionFull] = useState(false)
+  const openSess = (id, full=false) => { setSessionFull(!!full); setOpenSessionId(id) }
   const [progressEx, setProgressEx] = useState(null)
 
   const sessDone = s => { try { return computeSessionStatus(s)==='complete' } catch(e){} return s.status==='completed' }
@@ -5918,6 +5966,8 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
   const tomorrowDayEnd = new Date(todayStart); tomorrowDayEnd.setDate(tomorrowDayEnd.getDate()+2)
   const weekStart = new Date(todayStart); weekStart.setDate(weekStart.getDate()-((weekStart.getDay()+6)%7)) // Monday
   const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+7)
+  const viewWeekStart = new Date(weekStart); viewWeekStart.setDate(weekStart.getDate()+weekOffset*7)
+  const viewWeekEnd = new Date(viewWeekStart); viewWeekEnd.setDate(viewWeekStart.getDate()+7)
 
   const currentProgram = programs.find(p=>p.status==='current')
 
@@ -5933,13 +5983,13 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
 
   // Week-at-a-glance
   const weekDays = Array.from({length:7}).map((_,i)=>{
-    const d = new Date(weekStart); d.setDate(weekStart.getDate()+i)
+    const d = new Date(viewWeekStart); d.setDate(viewWeekStart.getDate()+i)
     const dEnd = new Date(d); dEnd.setDate(d.getDate()+1)
     const daySess = datedSessions.filter(x=>x.date>=d && x.date<dEnd)
     const done = daySess.some(x=>sessDone(x.sess))
     const skipped = !done && daySess.some(x=>sessSkipped(x.sess))
     return { date:d, label:['M','T','W','T','F','S','S'][i], num:d.getDate(),
-      hasSession:daySess.length>0, done, skipped,
+      hasSession:daySess.length>0, done, skipped, sessId: daySess[0]?daySess[0].sess.id:null,
       missed: !done && !skipped && d<todayStart && daySess.some(x=>!sessSkipped(x.sess)),
       isToday:d.getTime()===todayStart.getTime(), isPast:d<todayStart }
   })
@@ -5999,9 +6049,17 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
                 ? <button onClick={()=>unskipSession(sess.id)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Un-skip</button>
                 : !sessDone(sess) && <button onClick={()=>{skipSession(sess.id); setOpenSessionId(null); setTab('sessions')}} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Skip session</button>}
             </div>
+            {(()=>{
+              const _exs=safeExercises(sess)
+              const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
+              const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} onResume={()=>setSessionFull(true)}/>
+              return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned}
               go={(view)=>{ if(view==='program'){setOpenSessionId(null);setTab('sessions')} else if(view==='client'){setOpenSessionId(null);setTab('home')} else setOpenSessionId(null) }}/>
+              )
+            })()}
           </div>
           <ClientBottomNav tab={tab} setTab={t=>{setOpenSessionId(null);setTab(t)}} chatsUnread={chatsUnreadTotal}/>
         </div>
@@ -6067,7 +6125,14 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
 
           {/* Week-at-a-glance */}
           <div style={{marginBottom:22}}>
-            <CLabel icon="calendar" color={C.c3}>This Week</CLabel>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:10}}>
+              <button onClick={()=>setWeekOffset(weekOffset-1)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:9,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:C.muted,flexShrink:0,fontSize:18,lineHeight:1}}>‹</button>
+              <button onClick={()=>setWeekOffset(0)} style={{background:'none',border:'none',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:1,flex:1}}>
+                <span style={{fontSize:11,fontWeight:700,color:C.c3,fontFamily:'Space Grotesk,sans-serif',textTransform:'uppercase',letterSpacing:'0.1em'}}>{weekOffset===0?'This Week':weekOffset===-1?'Last Week':weekOffset===1?'Next Week':`${Math.abs(weekOffset)} Weeks ${weekOffset<0?'Ago':'Ahead'}`}</span>
+                <span style={{fontSize:10,color:C.faint}}>{viewWeekStart.toLocaleDateString('en-AU',{day:'numeric',month:'short'})} – {new Date(viewWeekStart.getTime()+6*86400000).toLocaleDateString('en-AU',{day:'numeric',month:'short'})}</span>
+              </button>
+              <button onClick={()=>setWeekOffset(weekOffset+1)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:9,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:C.muted,flexShrink:0,fontSize:18,lineHeight:1}}>›</button>
+            </div>
             <div style={{display:'flex',gap:5,justifyContent:'space-between'}}>
               {weekDays.map((d,i)=>{
                 const bg = d.done ? C.amber : d.isToday ? `${C.amber}1A` : 'transparent'
@@ -6075,7 +6140,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
                 const numCol = d.done ? C.bg : d.isToday ? C.amber : d.skipped ? C.faint : d.hasSession ? C.white : C.faint
                 const dot = d.done ? null : d.missed ? C.red : d.skipped ? C.muted : (d.hasSession && !d.isPast) ? C.c2 : null
                 return (
-                  <div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:5}}>
+                  <div key={i} onClick={()=>{ if(d.sessId) openSess(d.sessId,false) }} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:d.hasSession?'pointer':'default'}}>
                     <span style={{fontSize:10,fontWeight:700,color:d.isToday?C.amber:C.faint,letterSpacing:'0.04em'}}>{d.label}</span>
                     <div style={{width:'100%',aspectRatio:'1',maxWidth:42,borderRadius:10,background:bg,border:`1.5px solid ${bd}`,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
                       {d.done ? <Icon name="check" size={16} color={C.bg}/> : d.skipped ? <span style={{fontSize:14,fontWeight:700,color:C.faint}}>–</span> : <span style={{fontSize:13,fontWeight:700,color:numCol}}>{d.num}</span>}
@@ -6091,7 +6156,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
           {todaySession ? (
             <div style={{marginBottom:22}}>
               <CLabel icon="play">Today's Session</CLabel>
-              <div onClick={()=>setOpenSessionId(todaySession.sess.id)} style={{background:`linear-gradient(135deg, ${C.card} 0%, ${C.ink} 100%)`,border:`1px solid ${C.amber}40`,borderLeft:`3px solid ${C.amber}`,borderRadius:14,padding:'20px 22px',cursor:'pointer'}}>
+              <div onClick={()=>openSess(todaySession.sess.id,true)} style={{background:`linear-gradient(135deg, ${C.card} 0%, ${C.ink} 100%)`,border:`1px solid ${C.amber}40`,borderLeft:`3px solid ${C.amber}`,borderRadius:14,padding:'20px 22px',cursor:'pointer'}}>
                 <div style={{fontSize:19,fontWeight:700,color:C.white,marginBottom:4}}>{todaySession.sess.name}</div>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:14}}>
                   {currentProgram && <span style={{fontSize:12,color:C.muted}}>{currentProgram.name}</span>}
@@ -6108,7 +6173,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
           ) : todayDoneSession ? (
             <div style={{marginBottom:22}}>
               <CLabel icon="check" color={C.green}>Today's Session</CLabel>
-              <div onClick={()=>setOpenSessionId(todayDoneSession.sess.id)} style={{background:`linear-gradient(135deg, ${C.card} 0%, ${C.ink} 100%)`,border:`1px solid ${C.green}40`,borderLeft:`3px solid ${C.green}`,borderRadius:14,padding:'20px 22px',cursor:'pointer'}}>
+              <div onClick={()=>openSess(todayDoneSession.sess.id,false)} style={{background:`linear-gradient(135deg, ${C.card} 0%, ${C.ink} 100%)`,border:`1px solid ${C.green}40`,borderLeft:`3px solid ${C.green}`,borderRadius:14,padding:'20px 22px',cursor:'pointer'}}>
                 <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10,marginBottom:6}}>
                   <div style={{fontSize:19,fontWeight:700,color:C.white}}>{todayDoneSession.sess.name}</div>
                   <span style={{flexShrink:0,background:`${C.green}1A`,color:C.green,fontSize:11,fontWeight:700,padding:'4px 10px',borderRadius:999,display:'flex',alignItems:'center',gap:5}}><Icon name="check" size={12} color={C.green}/>{sessSkipped(todayDoneSession.sess)?'Skipped':'Complete'}</span>
@@ -6123,7 +6188,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
           ) : tomorrowSession ? (
             <div style={{marginBottom:22}}>
               <CLabel icon="clock" color={C.c3}>Next Up — Tomorrow</CLabel>
-              <div onClick={()=>setOpenSessionId(tomorrowSession.sess.id)} style={{background:C.card,border:`1px solid ${C.border}`,borderLeft:`3px solid ${C.c2}`,borderRadius:12,padding:'18px 20px',cursor:'pointer'}}>
+              <div onClick={()=>openSess(tomorrowSession.sess.id,false)} style={{background:C.card,border:`1px solid ${C.border}`,borderLeft:`3px solid ${C.c2}`,borderRadius:12,padding:'18px 20px',cursor:'pointer'}}>
                 <div style={{fontSize:16,fontWeight:700,color:C.white,marginBottom:4}}>{tomorrowSession.sess.name}</div>
                 {currentProgram && <div style={{fontSize:12,color:C.muted}}>{currentProgram.name}</div>}
               </div>
@@ -6187,7 +6252,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
                   const isToday = date.toDateString()===todayStart.toDateString()
                   const dayLabel = isToday ? 'Today' : date.toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'short'})
                   return (
-                    <div key={sess.id} onClick={()=>setOpenSessionId(sess.id)} style={{background:C.card,border:`1px solid ${isToday?`${C.amber}40`:C.border}`,borderLeft:`3px solid ${isToday?C.amber:C.c2}`,borderRadius:9,padding:'14px 16px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                    <div key={sess.id} onClick={()=>openSess(sess.id,false)} style={{background:C.card,border:`1px solid ${isToday?`${C.amber}40`:C.border}`,borderLeft:`3px solid ${isToday?C.amber:C.c2}`,borderRadius:9,padding:'14px 16px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:14,fontWeight:700,color:C.white,marginBottom:3}}>{sess.name}</div>
                         <div style={{fontSize:11,color:C.faint}}>{dayLabel}{prog&&` · ${prog.name}`}{sess.focus?` · ${sess.focus}`:''}</div>
@@ -6208,7 +6273,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
                   const prog = programs.find(p=>p.id===sess.program_id)
                   return (
                     <div key={sess.id} style={{background:C.card,border:`1px solid ${C.orange}33`,borderLeft:`3px solid ${C.orange}`,borderRadius:9,padding:'12px 14px',display:'flex',alignItems:'center',gap:10}}>
-                      <div onClick={()=>setOpenSessionId(sess.id)} style={{flex:1,minWidth:0,cursor:'pointer'}}>
+                      <div onClick={()=>openSess(sess.id,false)} style={{flex:1,minWidth:0,cursor:'pointer'}}>
                         <div style={{fontSize:13.5,fontWeight:700,color:C.white,marginBottom:2}}>{sess.name}</div>
                         <div style={{fontSize:11,color:C.faint}}>{date.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})}{prog&&` · ${prog.name}`}</div>
                       </div>
@@ -6227,7 +6292,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
                 {recentCompletedSessions.map(sess=>{
                   const prog = programs.find(p=>p.id===sess.program_id); const d = sess.completed_at ? new Date(sess.completed_at) : null
                   return (
-                    <div key={sess.id} onClick={()=>setOpenSessionId(sess.id)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'12px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:11}}>
+                    <div key={sess.id} onClick={()=>openSess(sess.id,false)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'12px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:11}}>
                       <div style={{width:26,height:26,borderRadius:7,background:`${C.green}1A`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="check" size={14} color={C.green}/></div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:13,color:C.white,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sess.name}</div>
