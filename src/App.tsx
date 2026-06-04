@@ -2392,8 +2392,9 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         defaultValue={shown}
         placeholder={target||''}
         inputMode={(metric==='time'||metric==='band')?'text':'decimal'}
+        onFocus={e=>e.target.select()}
         onBlur={e=>{ const v=e.target.value; if(v!==String(shown)) commitSet(ex.id,setNum,field,v) }}
-        style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:confirmed?'#0F1115':'#8A92A0',fontSize:15,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:confirmed?'#0F1115':'#8A92A0',caretColor:'#0F1115'}}
+        style={{flex:1,minWidth:0,width:'100%',background:'#FFFFFF',border:'none',borderRadius:9,padding:'12px 4px',color:confirmed?'#0F1115':'#8A92A0',fontSize:16,fontWeight:700,textAlign:'center',outline:'none',boxSizing:'border-box',WebkitTextFillColor:confirmed?'#0F1115':'#8A92A0',caretColor:'#0F1115'}}
       />
     )
   }
@@ -2488,7 +2489,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                   {isMulti&&<Icon name="repeat" size={15} color={col}/>}
                   <span style={{fontSize:14,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',textTransform:'uppercase',letterSpacing:'0.03em'}}>{sectionName}</span>
                 </div>
-                <div>{g.exs.map(ex=><ClientExRow key={ex.id} ex={ex} sectionCol={col}/>)}</div>
+                <div>{g.exs.map(ex=><React.Fragment key={ex.id}>{ClientExRow({ex, sectionCol:col})}</React.Fragment>)}</div>
               </div>
             )
           })}
@@ -2562,7 +2563,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
           </SL>
           {warmups.map(ex=>{
             const isEditingWu = editExId===ex.id
-            if(isEditingWu) return <ExRow key={ex.id} ex={ex}/>
+            if(isEditingWu) return <React.Fragment key={ex.id}>{ExRow({ex})}</React.Fragment>
             return(
               <div key={ex.id} style={{background:`${C.white}05`,borderRadius:7,padding:'7px 12px',marginBottom:4,border:`1px solid ${C.border}`}}>
                 <Row style={{alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -2689,7 +2690,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                       <button onClick={()=>applyGroupColor(ids,'')} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:4,color:C.faint,fontSize:10,cursor:'pointer',padding:'2px 7px'}}>reset</button>
                     </div>
                   )}
-                  {!collapsed&&<div>{g.exs.map(ex=><ExRow key={ex.id} ex={ex}/>)}</div>}
+                  {!collapsed&&<div>{g.exs.map(ex=><React.Fragment key={ex.id}>{ExRow({ex})}</React.Fragment>)}</div>}
                 </div>
               )
             })}
