@@ -353,6 +353,7 @@ function computeSessionStatus(sess) {
   if(sess?.status === 'skipped')           return 'skipped'
   if(sess?.status === 'manual_complete')   return 'complete'
   if(sess?.status === 'manual_incomplete') return 'not_started'
+  if(sess?.status === 'complete')          return 'complete'  // stored completion (imports, finished live sessions, coach toggle) is authoritative
   const exs = safeExercises(sess).filter(e => !e.isWarmup)
   if(!exs.length) return sess?.status || 'not_started'
   let totalPrescribed = 0, totalDone = 0
@@ -377,6 +378,7 @@ const STATUS = {
   skipped:     { label:'Skipped',     color:'#64748B' },
 }
 function getSessionPct(sess) {
+  if(sess?.status === 'complete' || sess?.status === 'manual_complete') return 100
   const exs = safeExercises(sess).filter(e=>!e.isWarmup)
   const prescribed = exs.reduce((a,e)=>a+(parseInt(e.sets)||1),0)
   const done = exs.reduce((a,e)=>{
@@ -1455,6 +1457,7 @@ function ClientsView({ clients, programs, addClient, updateClient, deleteClient,
                         <span style={{fontWeight:700,fontSize:15,color:C.white}}>{c.name}</span>
                         {c.status!=='active'&&<Tag v={c.status} color={C.muted}/>}
                         {c.pain_flag&&<Tag v="Pain" color={C.red}/>}
+                        {(()=>{const h=c.health_screen;return (h&&typeof h==='object'&&['heart','dizzy','meds','preg','doctor','bone'].some(k=>h[k]===true))?<Tag v="⚠ Health" color={C.orange}/>:null})()}
                       </Row>
                       <span style={{fontSize:12,color:C.muted}}>
                         {c.email||'No email'}{c.goal?` · ${c.goal}`:''}
@@ -1568,7 +1571,7 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
 
   const PCard = ({ prog }) => {
     const ps   = sessions.filter(s=>s.program_id===prog.id)
-    const done = ps.filter(s=>s.status==='complete').length
+    const done = ps.filter(s=>computeSessionStatus(s)==='complete').length
     const pct  = ps.length>0?Math.round(done/ps.length*100):0
     return (
       <Card style={{padding:'13px 16px',opacity:prog.status==='complete'?0.85:1}}>
@@ -2099,6 +2102,10 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
   const [addSetFor, setAddSetFor] = useState(null)
   const [setF,      setSetF]      = useState(BLANK_SET)
   const [exSearch,  setExSearch]  = useState('')
+  const [qaName, setQaName] = useState('')
+  const [qaMode, setQaMode] = useState('new')
+  const [qaWarm, setQaWarm] = useState(false)
+  const [editAdv, setEditAdv] = useState(false)
   const [draggingId, setDraggingId] = useState(null)
   const [dragOverId, setDragOverId] = useState(null)
   const [collapsedGroups, setCollapsedGroups] = useState({})
@@ -2130,6 +2137,10 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
   const delEx     = (id) => { if(!window.confirm('Delete exercise?')) return; saveExs(exs.filter(e=>e.id!==id)) }
   const dupEx     = (ex) => saveExs([...exs,{...ex,id:uid(),loggedSets:[]}])
   const moveEx    = (id,dir) => { const a=[...exs]; const i=a.findIndex(e=>e.id===id); if(i<0||(dir<0&&i===0)||(dir>0&&i===a.length-1)) return; [a[i],a[i+dir]]=[a[i+dir],a[i]]; saveExs(a) }
+  const blockLetters = () => { const seen=[]; mainEx.forEach(e=>{ const L=(e.blockLabel||'').replace(/[^A-Za-z]/g,'').toUpperCase().charAt(0); if(L&&!seen.includes(L)) seen.push(L) }); return seen }
+  const lastLetter = () => { const ls=blockLetters(); return ls.length?ls[ls.length-1]:'A' }
+  const nextBlockLabel = (mode) => { const ABC='ABCDEFGHIJKLMNOPQRSTUVWXYZ'; if(mode==='super'){ const L=lastLetter(); const n=mainEx.filter(e=>(e.blockLabel||'').toUpperCase().charAt(0)===L).length; return L+(n+1) } const li=ABC.indexOf(lastLetter()); const L=mainEx.length?ABC[Math.min(li+1,25)]:'A'; return L+'1' }
+  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'] }); setQaName('') }
   const groupTypeName = (n) => n===1?'Single':n===2?'Superset':n===3?'Tri-set':'Circuit'
   const applyGroupColor = (ids,color) => { saveExs(exs.map(e=>ids.has(e.id)?{...e,labelColor:color||''}:e)); setColorPickerGroup(null) }
   const renameSection = (letter, name) => {
@@ -2160,7 +2171,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     saveExs(arr)
   }
 
-  const filtLib = DEFAULT_LIB.filter(e=>!exSearch||e.name.toLowerCase().includes(exSearch.toLowerCase())||e.pattern.toLowerCase().includes(exSearch.toLowerCase()))
+  const filtLib = DEFAULT_LIB.filter(e=>!qaName||e.name.toLowerCase().includes(qaName.toLowerCase())||e.pattern.toLowerCase().includes(qaName.toLowerCase()))
 
   // ── Compact exercise row with click-to-expand inline editor ──────────────
   const ExRow = ({ ex }) => {
@@ -2173,6 +2184,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
 
     const openEdit = () => {
       setEditExId(ex.id)
+      setEditAdv(false)
       const sp=(v)=>String(v||'').split(/[\/,]/).map(x=>x.trim())
       const recCols=['reps','load','rpe','rir','time','distance'].filter(k=> k==='reps' || (ex[k]&&String(ex[k]).trim()!==''))
       const nS=Math.max(1,parseInt(ex.sets)||1)
@@ -2241,6 +2253,10 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
             <G2 style={{marginBottom:8}}>
               <TI label="Exercise Name" value={editExF.name||''} onChange={v=>setEditExF(p=>({...p,name:v}))} placeholder="Exercise name"/>
               <TI label="Block Label" value={editExF.blockLabel||''} onChange={v=>setEditExF(p=>({...p,blockLabel:v}))} placeholder="A1, B2, R1…"/>
+            </G2>
+            <TargetTable form={editExF} setForm={setEditExF}/>
+            <button type="button" onClick={()=>setEditAdv(v=>!v)} style={{display:'flex',alignItems:'center',gap:6,background:'none',border:'none',color:C.muted,fontSize:12,fontWeight:600,cursor:'pointer',padding:'4px 0',marginBottom:6}}><Icon name="sliders" size={13} color={C.muted}/>Advanced {editAdv?'▲':'▼'}</button>
+            {editAdv && (<>
               <div style={{marginBottom:8}}>
                 <label style={lS}>Block Colour</label>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
@@ -2254,8 +2270,6 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                     style={{background:'none',border:`1px solid ${C.border}`,borderRadius:4,color:C.faint,fontSize:10,cursor:'pointer',padding:'2px 6px'}}>reset</button>}
                 </div>
               </div>
-            </G2>
-            <TargetTable form={editExF} setForm={setEditExF}/>
             <G3 style={{marginBottom:8}}>
               <TI label="Tempo" value={editExF.tempo||''} onChange={v=>setEditExF(p=>({...p,tempo:v}))} placeholder="3010"/>
               <TI label="Rest"  value={editExF.rest||''}  onChange={v=>setEditExF(p=>({...p,rest:v}))}  placeholder="90s"/>
@@ -2290,6 +2304,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                 Force complete
               </label>
             </div>
+            </>)}
             <Row style={{gap:6,flexWrap:'wrap',marginBottom:12}}>
               <Btn label="Save" onClick={saveExEdit}/>
               <Btn label="Cancel" variant="secondary" onClick={()=>setEditExId(null)}/>
@@ -2304,9 +2319,11 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                 <div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Logged Sets — click to edit</div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
                   {(ex.loggedSets||[]).map(ls=>{
-                    const isNoWeight = !ls.completedLoad && !ls.skipped
-                    const color = ls.skipped ? C.orange : isNoWeight ? C.c3 : C.green
-                    const label = ls.skipped
+                    const _work = !!(ls.completedLoad||ls.completedReps||ls.completedTime||ls.completedDistance||ls.speed||ls.rpm||ls.power||ls.energy||ls.hr||ls.bandColour)
+                    const _skp = ls.skipped && !_work
+                    const isNoWeight = !ls.completedLoad && !_skp
+                    const color = _skp ? C.orange : isNoWeight ? C.c3 : C.green
+                    const label = _skp
                       ? `S${ls.setNumber} skip`
                       : isNoWeight
                         ? `S${ls.setNumber} BW${ls.completedReps?` ×${ls.completedReps}`:''}`
@@ -2375,7 +2392,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     const ls=[...(e.loggedSets||[])]
     const idx=ls.findIndex(s=>s.setNumber===setNum)
     const WORK=['completedReps','completedLoad','completedTime','completedDistance','speed','rpm','power','energy','hr','bandColour']
-    const stamp = o => ({...o, confirmed: WORK.some(f=>o[f]!=null&&String(o[f]).trim()!=='')})
+    const stamp = o => { const has = WORK.some(f=>o[f]!=null&&String(o[f]).trim()!==''); return {...o, confirmed: has, skipped: has ? false : o.skipped} }
     if(idx>=0) ls[idx]=stamp({...ls[idx],[field]:value})
     else ls.push(stamp({id:uid(),setNumber:setNum,[field]:value}))
     saveExs(exs.map(x=>x.id===exId?{...x,loggedSets:ls}:x))
@@ -2638,63 +2655,37 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         </div>
       )}
 
-      <SL right={!addingEx&&<Btn label="+ Add Exercise" small onClick={()=>{setAddingEx(true);setEF(BLANK_EX);setExSearch('')}}/>}>
-        Exercises ({mainEx.length})
-      </SL>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+        <span style={{fontSize:11,fontWeight:700,color:C.white,textTransform:'uppercase',letterSpacing:'0.06em'}}>Exercises ({mainEx.length})</span>
+      </div>
+      <div style={{background:C.midnight,border:`1px solid ${C.border}`,borderRadius:12,padding:11,marginBottom:14}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,background:C.ink,border:`1px solid ${C.border}`,borderRadius:9,padding:'8px 11px'}}>
+          <Icon name="dumbbell" size={15} color={C.faint}/>
+          <input value={qaName} onChange={e=>setQaName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&qaName.trim())quickAdd(qaName,qaMode)}} placeholder="Add exercise…" style={{flex:1,minWidth:0,background:'transparent',border:'none',outline:'none',color:C.white,fontSize:14,fontFamily:'inherit'}}/>
+          {qaName.trim()&&<button onClick={()=>quickAdd(qaName,qaMode)} style={{background:C.amber,color:C.bg,border:'none',borderRadius:7,fontSize:12,fontWeight:700,padding:'6px 12px',cursor:'pointer',flexShrink:0}}>Add</button>}
+        </div>
+        {qaName&&filtLib.length>0&&(
+          <div style={{background:C.ink,borderRadius:8,border:`1px solid ${C.border}`,maxHeight:160,overflowY:'auto',marginTop:8}}>
+            {filtLib.slice(0,7).map(e=>(
+              <div key={e.id} onClick={()=>quickAdd(e.name,qaMode)} style={{padding:'8px 12px',cursor:'pointer',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:8}}>
+                <span style={{flex:1,fontSize:13,color:C.white}}>{e.name}</span>
+                <Tag v={e.pattern} color={PC[e.pattern]||C.c2} small/>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:8,overflow:'hidden',marginTop:9}}>
+          <button onClick={()=>setQaMode('new')} style={{flex:1,background:qaMode==='new'?`${C.amber}18`:'transparent',border:'none',color:qaMode==='new'?C.amber:C.muted,fontSize:12,fontWeight:600,padding:'8px 0',cursor:'pointer'}}>+ New block</button>
+          <button onClick={()=>setQaMode('super')} style={{flex:1,background:qaMode==='super'?`${C.amber}18`:'transparent',border:'none',color:qaMode==='super'?C.amber:C.muted,fontSize:12,fontWeight:600,padding:'8px 0',cursor:'pointer',borderLeft:`1px solid ${C.border}`}}>+ Superset with {lastLetter()}</button>
+        </div>
+        <label style={{display:'flex',alignItems:'center',gap:7,marginTop:9,cursor:'pointer'}}>
+          <input type="checkbox" checked={qaWarm} onChange={e=>setQaWarm(e.target.checked)} style={{accentColor:C.c2,cursor:'pointer'}}/>
+          <span style={{fontSize:12,color:C.muted}}>Add as warm-up / prep</span>
+        </label>
+      </div>
 
-      {addingEx && (
-        <Panel style={{marginBottom:14}}>
-          <h4 style={{color:C.white,marginBottom:10}}>Add Exercise</h4>
-          <div style={{marginBottom:8}}><TI label="Search Library" value={exSearch} onChange={setExSearch} placeholder="Search by name or pattern…"/></div>
-          {exSearch && (
-            <div style={{background:C.ink,borderRadius:8,border:`1px solid ${C.border}`,maxHeight:130,overflowY:'auto',marginBottom:8}}>
-              {filtLib.slice(0,8).map(e=>(
-                <div key={e.id} onClick={()=>{setEF(p=>({...p,name:e.name}));setExSearch(e.name)}} style={{padding:'7px 12px',cursor:'pointer',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:8,background:eF.name===e.name?`${C.amber}18`:'transparent'}}>
-                  <span style={{flex:1,fontSize:12,color:eF.name===e.name?C.amber:C.white}}>{e.name}</span>
-                  <Tag v={e.pattern} color={PC[e.pattern]||C.c2} small/>
-                </div>
-              ))}
-              {filtLib.length===0&&<div style={{padding:10,fontSize:12,color:C.muted}}>No results</div>}
-            </div>
-          )}
-          <G2 style={{marginBottom:8}}>
-            <TI label="Exercise Name *" value={eF.name} onChange={v=>setEF(p=>({...p,name:v}))} placeholder="Exercise name"/>
-            <TI label="Block Label" value={eF.blockLabel} onChange={v=>setEF(p=>({...p,blockLabel:v}))} placeholder="A1, B2, F3…"/>
-          </G2>
-          <TargetTable form={eF} setForm={setEF}/>
-          <G2 style={{marginBottom:8}}>
-            <TI label="Rest"  value={eF.rest}  onChange={v=>setEF(p=>({...p,rest:v}))}  placeholder="90s"/>
-            <TI label="Tempo" value={eF.tempo} onChange={v=>setEF(p=>({...p,tempo:v}))} placeholder="3010"/>
-          </G2>
-          <div style={{marginBottom:8}}>
-            <label style={lS}>Collect from athlete</label>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
-              {[['reps','Reps Completed'],['rir','Reps In Reserve'],['load','Weight Completed'],['rpe','RPE'],['time','Time'],['speed','Speed'],['rpm','RPM'],['distance','Distance Completed'],['power','Power'],['energy','Energy'],['hr','Heart Rate'],['vas','VAS Pain Score'],['band','Band Colour']].map(([k,lab])=>{
-                const on=(eF.collect||[]).includes(k)
-                return <button key={k} type="button" onClick={()=>setEF(p=>{const c=new Set(p.collect||[]); c.has(k)?c.delete(k):c.add(k); return {...p,collect:[...c]}})} style={{fontSize:11,fontWeight:600,padding:'5px 11px',borderRadius:20,cursor:'pointer',border:`1px solid ${on?C.amber:C.border}`,background:on?`${C.amber}1A`:'transparent',color:on?C.amber:C.muted}}>{on?'\u2713 ':''}{lab}</button>
-              })}
-            </div>
-            <div style={{fontSize:10,color:C.faint,marginTop:5,lineHeight:1.4}}>Selected = athlete logs it (a box per set). Unselected targets show read-only.</div>
-          </div>
-          <div style={{marginBottom:8}}>
-            <label style={lS}>Measure reps on each side? (L + R)</label>
-            <select value={eF.perSide||'default'} onChange={e=>setEF(p=>({...p,perSide:e.target.value}))} style={{...iS,cursor:'pointer'}}>
-              <option value="default">Auto — detect from exercise name</option>
-              <option value="yes">Yes — show as (L + R)</option>
-              <option value="no">No — single side</option>
-            </select>
-          </div>
-          <div style={{marginBottom:8}}><TA label="Coach Note" value={eF.notes} onChange={v=>setEF(p=>({...p,notes:v}))} rows={2}/></div>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-            <input type="checkbox" id="wu_new" checked={eF.isWarmup} onChange={e=>setEF(p=>({...p,isWarmup:e.target.checked}))} style={{accentColor:C.amber,cursor:'pointer'}}/>
-            <label htmlFor="wu_new" style={{fontSize:12,color:C.muted,cursor:'pointer'}}>Warm-up / prep exercise</label>
-          </div>
-          <Row><Btn label="Add Exercise" onClick={addEx} disabled={!eF.name.trim()}/><Btn label="Cancel" variant="secondary" onClick={()=>setAddingEx(false)}/></Row>
-        </Panel>
-      )}
-
-      {mainEx.length===0&&!addingEx && (
-        <Card style={{textAlign:'center',padding:24}}><p style={{color:C.muted,marginBottom:10}}>No exercises yet.</p><Btn label="+ Add Exercise" small onClick={()=>setAddingEx(true)}/></Card>
+      {mainEx.length===0 && (
+        <Card style={{textAlign:'center',padding:24}}><p style={{color:C.muted,margin:0}}>No exercises yet — add your first above.</p></Card>
       )}
 
       {/* Exercise list — collapsible colour-coded groups */}
@@ -2726,13 +2717,13 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                     ) : (
                       <span onClick={()=>{setEditSectionKey(key);setSectionDraft(g.exs[0].sectionName||'')}} title="Rename section (applies across the program)" style={{fontSize:13,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer',display:'flex',alignItems:'center',gap:6}}>
                         {g.exs[0].sectionName||groupTypeName(g.exs.length)}
-                        <span style={{fontSize:9,color:C.faint,fontWeight:400}}>edit</span>
+                        <span style={{fontSize:9,color:C.dim,fontWeight:400}}>edit</span>
                       </span>
                     )}
-                    <span style={{fontSize:10,color:C.faint,border:`1px solid ${C.border}`,borderRadius:20,padding:'1px 8px'}}>{g.exs.length} item{g.exs.length!==1?'s':''}</span>
+                    <span style={{fontSize:10,color:C.dim,border:`1px solid ${C.border}`,borderRadius:20,padding:'1px 8px'}}>{g.exs.length} item{g.exs.length!==1?'s':''}</span>
                     <div style={{flex:1}}/>
                     <button onClick={()=>setColorPickerGroup(colorPickerGroup===key?null:key)} title="Group colour" style={{width:18,height:18,borderRadius:'50%',background:col,border:`2px solid ${colorPickerGroup===key?C.white:'transparent'}`,cursor:'pointer',flexShrink:0,padding:0}}/>
-                    <button onClick={()=>setCollapsedGroups(p=>({...p,[key]:!p[key]}))} style={{background:'none',border:'none',color:C.faint,cursor:'pointer',fontSize:13,padding:'2px 4px',transform:collapsed?'none':'rotate(180deg)',transition:'transform 0.15s'}}>⌄</button>
+                    <button onClick={()=>setCollapsedGroups(p=>({...p,[key]:!p[key]}))} style={{background:'none',border:'none',color:C.dim,cursor:'pointer',fontSize:13,padding:'2px 4px',transform:collapsed?'none':'rotate(180deg)',transition:'transform 0.15s'}}>⌄</button>
                   </div>
                   {colorPickerGroup===key&&(
                     <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',padding:'10px 12px',background:C.ink,borderTop:`1px solid ${C.border}`}}>
@@ -3501,7 +3492,7 @@ function getClientPBs(clientId, sessions, allSessions, weeks, programs) {
     const d = getSessionDate(sess, allSessions, weeks, programs)
     safeExercises(sess).filter(ex=>!ex.isWarmup).forEach(ex=>{
       const exCanon = resolveExName(ex.name)
-      ;(ex.loggedSets||[]).filter(ls=>!ls.skipped&&!ls.excluded&&ls.completedLoad).forEach(ls=>{
+      ;(ex.loggedSets||[]).filter(ls=>!ls.excluded&&ls.completedLoad).forEach(ls=>{
         // Effective canonical name = reassignedTo override, else parent exercise canonical
         const cname = ls.reassignedTo ? resolveExName(ls.reassignedTo) : exCanon
         ensure(cname, sess.id, d)
@@ -3740,9 +3731,9 @@ function stallStatusMeta(status) {
   }
 }
 
-function SvgLineChart({ data, xKey, yKey, color=C.amber, height=200, label='' }) {
+function SvgLineChart({ data, xKey, yKey, color=C.amber, height=200, label='', defaultTrend=false }) {
   const [hovered,   setHovered]   = useState(null)
-  const [showTrend, setShowTrend] = useState(false)
+  const [showTrend, setShowTrend] = useState(defaultTrend)
   if(!data||data.length<2) return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.faint,fontSize:12}}>Not enough data yet</div>
   const W=560, H=height, PAD={t:16,r:16,b:32,l:44}
   const xs=data.map(d=>d[xKey]), ys=data.map(d=>parseFloat(d[yKey])||0)
@@ -3997,7 +3988,7 @@ function collectExerciseLogs(exerciseName, clientId, sessions, weeks, programs) 
     safeExercises(sess).filter(ex=>!ex.isWarmup).forEach(ex=>{
       const exCanon = resolveExName(ex.name).toLowerCase()
       ;(ex.loggedSets||[]).forEach(ls=>{
-        if(ls.skipped) return
+        if(ls.skipped && !ls.completedLoad) return
         // Effective exercise = reassignedTo if user moved it, else parent exercise's canonical name
         const effectiveCanon = ls.reassignedTo
           ? resolveExName(ls.reassignedTo).toLowerCase()
@@ -4301,6 +4292,58 @@ const PROGRESS_PERIODS = [
   {id:'custom', label:'Custom', days:null},
 ]
 
+function ClientTrendChart({ data, height=205 }){
+  const [show, setShow] = useState({load:true, volume:true, e1rm:false, trend:true})
+  const [hovered, setHovered] = useState(null)
+  if(!data || data.length<2) return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.faint,fontSize:12}}>Not enough data yet — log at least 2 sessions</div>
+  const W=560,H=height
+  const leftOn = show.e1rm||show.load||show.trend
+  const PAD={t:14,r:show.volume?46:14,b:28,l:leftOn?40:14}, iW=W-PAD.l-PAD.r, iH=H-PAD.t-PAD.b
+  const kVals=data.flatMap(d=>[d.e1rm,d.load]).filter(v=>v>0)
+  const kMin=kVals.length?Math.min(...kVals)*0.92:0, kMax=kVals.length?Math.max(...kVals)*1.08:100
+  const vVals=data.map(d=>d.volume).filter(v=>v>0)
+  const vMin=vVals.length?Math.min(...vVals)*0.85:0, vMax=vVals.length?Math.max(...vVals)*1.08:100
+  const px=i=>PAD.l+(data.length>1?i/(data.length-1):0)*iW
+  const pyK=v=>PAD.t+(1-(v-kMin)/((kMax-kMin)||1))*iH
+  const pyV=v=>PAD.t+(1-(v-vMin)/((vMax-vMin)||1))*iH
+  const seg=(key,pyFn)=>data.map((d,i)=>(d[key]>0?{x:px(i),y:pyFn(d[key]),v:d[key],i}:null)).filter(Boolean)
+  const ePts=seg('e1rm',pyK), lPts=seg('load',pyK), vPts=seg('volume',pyV)
+  const toPath=p=>p.map((q,j)=>`${j===0?'M':'L'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ')
+  const eSeq=data.map(d=>d.e1rm>0?d.e1rm:null).filter(v=>v!=null)
+  const eReg = eSeq.length>=3 ? calcRegression(eSeq) : null
+  const trendPath = eReg ? `M${px(0).toFixed(1)},${pyK(eReg.intercept).toFixed(1)} L${px(data.length-1).toFixed(1)},${pyK(eReg.intercept+eReg.slope*(data.length-1)).toFixed(1)}` : null
+  const slope = eReg ? (eReg.slope>=0?'+':'')+Math.round(eReg.slope*10)/10+'kg/exp' : null
+  const xIdxs = data.length<=5?data.map((_,i)=>i):[0,1,2,3,4].map(t=>Math.round(t*(data.length-1)/4))
+  const ticks=[0,0.5,1].map(t=>({y:PAD.t+(1-t)*iH, k:Math.round((kMin+t*(kMax-kMin))*10)/10, v:Math.round(vMin+t*(vMax-vMin))}))
+  const METS=[{k:'load',label:'Load',color:C.amber},{k:'volume',label:'Volume',color:C.c2},{k:'e1rm',label:'e1RM',color:C.c3},{k:'trend',label:'Trend',color:C.c3,dash:true}]
+  return (
+    <div>
+      <div style={{display:'flex',gap:5,marginBottom:10,flexWrap:'wrap',alignItems:'center'}}>
+        {METS.map(({k,label,color,dash})=>(
+          <button key={k} onClick={()=>setShow(p=>({...p,[k]:!p[k]}))} style={{padding:'4px 11px',borderRadius:20,border:`1.5px solid ${show[k]?color:C.border}`,background:show[k]?`${color}18`:'transparent',color:show[k]?color:C.faint,fontSize:10.5,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
+            {dash?<svg width="12" height="8" viewBox="0 0 12 8"><line x1="0" y1="6" x2="12" y2="2" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2"/></svg>:<span style={{width:8,height:8,borderRadius:'50%',background:show[k]?color:'transparent',border:`2px solid ${show[k]?color:C.faint}`,display:'inline-block'}}/>}
+            {label}
+          </button>
+        ))}
+        {show.trend&&eReg&&<span style={{fontSize:10.5,color:eReg.slope>=0?C.green:C.red,fontWeight:600,marginLeft:2}}>{slope}</span>}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height,display:'block'}} onMouseLeave={()=>setHovered(null)}>
+        {ticks.map((t,i)=>(<g key={i}><line x1={PAD.l} y1={t.y} x2={W-PAD.r} y2={t.y} stroke="rgba(255,255,255,0.05)" strokeDasharray="3 4"/>{leftOn&&<text x={PAD.l-5} y={t.y+3} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize={9}>{t.k}</text>}{show.volume&&<text x={W-PAD.r+5} y={t.y+3} textAnchor="start" fill={C.c2} fillOpacity="0.6" fontSize={9}>{t.v}</text>}</g>))}
+        {xIdxs.map(i=>(<text key={i} x={px(i)} y={H-3} textAnchor="middle" fill="rgba(255,255,255,0.3)" fontSize={9}>{data[i]?data[i].date:''}</text>))}
+        {show.volume&&vPts.length>1&&<path d={toPath(vPts)} fill="none" stroke={C.c2} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>}
+        {show.load&&lPts.length>1&&<path d={toPath(lPts)} fill="none" stroke={C.amber} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>}
+        {show.e1rm&&ePts.length>1&&<path d={toPath(ePts)} fill="none" stroke={C.c3} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/>}
+        {show.trend&&trendPath&&<path d={trendPath} fill="none" stroke={C.c3} strokeWidth="1.5" strokeDasharray="7 4"/>}
+        {data.map((_,i)=>{const slotW=data.length>1?iW/(data.length-1):iW;return <rect key={i} x={i===0?PAD.l:px(i)-slotW/2} y={PAD.t} width={i===0?slotW/2:slotW} height={iH} fill="transparent" onMouseEnter={()=>setHovered(i)}/>})}
+        {show.volume&&vPts.map(p=>(<circle key={'v'+p.i} cx={p.x} cy={p.y} r={hovered===p.i?5:2.5} fill={hovered===p.i?C.c2:'#0D1117'} stroke={C.c2} strokeWidth="2"/>))}
+        {show.load&&lPts.map(p=>(<circle key={'l'+p.i} cx={p.x} cy={p.y} r={hovered===p.i?5:2.5} fill={hovered===p.i?C.amber:'#0D1117'} stroke={C.amber} strokeWidth="2"/>))}
+        {show.e1rm&&ePts.map(p=>(<circle key={'e'+p.i} cx={p.x} cy={p.y} r={hovered===p.i?5:2.5} fill={hovered===p.i?C.c3:'#0D1117'} stroke={C.c3} strokeWidth="2"/>))}
+        {hovered!==null&&(()=>{const d=data[hovered],tx=px(hovered),rows=[{l:'Date',v:d.date,c:C.muted},show.load&&d.load>0&&{l:'Load',v:d.load+'kg',c:C.amber},show.e1rm&&d.e1rm>0&&{l:'e1RM',v:d.e1rm+'kg',c:C.c3},show.volume&&d.volume>0&&{l:'Volume',v:d.volume+'kg',c:C.c2}].filter(Boolean),tw=128,th=8+rows.length*16,bx=Math.min(Math.max(tx-tw/2,4),W-tw-4),by=PAD.t+2;return(<g><rect x={bx} y={by} width={tw} height={th} rx={6} fill="#0A0E18" stroke="rgba(255,255,255,0.18)"/>{rows.map((r,j)=>(<g key={j}><text x={bx+7} y={by+13+j*16} fill={r.c} fontSize={9} fontWeight="700">{r.l}</text><text x={bx+tw-7} y={by+13+j*16} fill={C.white} fontSize={10} fontWeight="700" textAnchor="end">{r.v}</text></g>))}</g>)})()}
+      </svg>
+    </div>
+  )
+}
+
 function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, av=0, focusEx, onFocusHandled, client, updateClient }){
   const [tab, setTab] = useState('pbs')
   const [search, setSearch] = useState('')
@@ -4356,7 +4399,7 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
     const delta = Math.round((cur-prev)*10)/10
     const status = !prev?{t:'New',c:C.c3}: delta>0?{t:'Progressing',c:C.green}: delta<0?{t:'Declining',c:C.red}:{t:'Holding',c:C.amber}
     const last5 = e1Hist.slice(-5).map(h=>h.e1rm)
-    const back = ()=> exFull ? setExFull(false) : (setOpenEx(null), setMetric('e1rm'))
+    const back = ()=> setOpenEx(null)
     const Head = (
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:13}}>
         <button onClick={back} style={{background:'none',border:'none',cursor:'pointer',padding:'0 4px 0 0',display:'flex',alignItems:'center'}}><span style={{fontSize:26,color:C.muted,lineHeight:1}}>&#8249;</span></button>
@@ -4364,54 +4407,19 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
       </div>
     )
 
-    if(!exFull){
-      return (
-        <div style={{padding:'4px 0 0'}}>
-          {Head}
-          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'16px 15px',marginBottom:12}}>
-            <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',marginBottom:14}}>
-              <div>
-                <div style={{fontSize:11,color:C.muted,letterSpacing:'0.05em',marginBottom:3}}>CURRENT e1RM</div>
-                <div style={{fontSize:36,fontWeight:700,color:C.amber,lineHeight:1,fontFamily:'Space Grotesk,sans-serif'}}>{cur||'—'}<span style={{fontSize:14,color:C.faint}}>kg</span></div>
-              </div>
-              <div style={{textAlign:'right'}}>
-                {prev>0&&<div style={{color:delta>=0?C.green:C.red,fontSize:13,fontWeight:600}}>{delta>=0?'+':''}{delta} vs last</div>}
-                <div style={{marginTop:5}}><span style={{fontSize:11,color:status.c,background:`${status.c}1A`,borderRadius:999,padding:'2px 9px',fontWeight:600}}>{status.t}</span></div>
-              </div>
-            </div>
-            {last5.length>=2 ? (()=>{ const v=last5,mn=Math.min(...v),mx=Math.max(...v),r=(mx-mn)||1; const xy=i=>[10+i*(280/(v.length-1)), 58-((v[i]-mn)/r)*46]; const pts=v.map((_,i)=>xy(i).join(',')).join(' '); return <svg width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none"><polyline points={pts} fill="none" stroke={C.c2} strokeWidth="2.5"/>{v.map((_,i)=>{const [cx,cy]=xy(i);return <circle key={i} cx={cx} cy={cy} r={i===v.length-1?4.5:3} fill={i===v.length-1?C.gold:C.c2}/>})}</svg> })() : <div style={{fontSize:12,color:C.faint,textAlign:'center',padding:'10px 0'}}>Not enough data yet</div>}
-            <div style={{fontSize:10,color:C.faint,textAlign:'center',marginTop:5}}>Last {last5.length} exposures</div>
-          </div>
-          <button onClick={()=>setExFull(true)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:7,background:'transparent',border:`1px solid ${C.amber}55`,color:C.amber,borderRadius:11,padding:13,fontSize:13,fontWeight:600,cursor:'pointer'}}>Full history &amp; stats &#8594;</button>
-        </div>
-      )
-    }
-
-    const allTime = pb?Math.round(pb.maxE1RM):0
-    const bestSet = hist.reduce((m,h)=> (h.bestLoad||0)>(m.load||0)?{load:h.bestLoad,reps:h.bestReps}:m, {load:0,reps:0})
-    const mk = metric==='e1rm'?{key:'e1rm',lab:'kg',col:C.c2,name:'e1RM'}: metric==='load'?{key:'bestLoad',lab:'kg',col:C.amber,name:'Load'}:{key:'volumeLoad',lab:'',col:C.purple,name:'Volume'}
-    const chartData = hist.filter(h=>inPeriod(h.date) && (h[mk.key]||0)>0).map(h=>({x:h.dateStr, [mk.key]:Math.round((h[mk.key])*10)/10}))
+    const allTimeLoad = pb?Math.round(pb.maxLoad):0
+    const bestE1 = pb?Math.round(pb.maxE1RM):0
+    const triData = hist.map(h=>({date:h.dateStr, e1rm:Math.round((h.e1rm||0)*10)/10, load:Math.round((h.bestLoad||0)*10)/10, volume:Math.round(h.volumeLoad||0)}))
     const expos = [...hist].reverse()
     return (
       <div style={{padding:'4px 0 0'}}>
         {Head}
-        <div style={{display:'flex',gap:6,marginBottom:10}}>
-          {[['e1rm','e1RM'],['load','Load'],['volume','Volume']].map(([m,l])=>(
-            <button key={m} onClick={()=>setMetric(m)} style={{flex:1,fontSize:11.5,fontWeight:700,padding:'7px 0',borderRadius:9,border:`1px solid ${metric===m?C.amber:C.border}`,background:metric===m?C.amber:'transparent',color:metric===m?C.bg:C.muted,cursor:'pointer'}}>{l}</button>
-          ))}
-        </div>
-        <div style={{display:'flex',gap:5,marginBottom:11,flexWrap:'wrap'}}>
-          {PROGRESS_PERIODS.filter(p=>p.id!=='custom').map(p=>(
-            <button key={p.id} onClick={()=>setPeriod(p.id)} style={{fontSize:10.5,fontWeight:700,padding:'4px 10px',borderRadius:999,border:'none',background:period===p.id?C.amber:C.lift,color:period===p.id?C.bg:C.muted,cursor:'pointer'}}>{p.label}</button>
-          ))}
-        </div>
-        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'12px 10px 6px',marginBottom:10}}>
-          <div style={{fontSize:11,color:C.muted,marginBottom:2,paddingLeft:4}}>{mk.name} over time</div>
-          <SvgLineChart data={chartData} xKey="x" yKey={mk.key} color={mk.col} height={170} label={mk.lab}/>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'12px 10px 8px',marginBottom:12}}>
+          <ClientTrendChart data={triData} height={205}/>
         </div>
         <div style={{display:'flex',gap:7,marginBottom:14}}>
-          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>All-time</div><div style={{fontSize:16,fontWeight:700,color:C.gold,fontFamily:'Space Grotesk,sans-serif'}}>{allTime||'—'}</div></div>
-          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>Best set</div><div style={{fontSize:16,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{bestSet.load?`${bestSet.load}${bestSet.reps?'×'+bestSet.reps:''}`:'—'}</div></div>
+          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>All-time best</div><div style={{fontSize:16,fontWeight:700,color:C.gold,fontFamily:'Space Grotesk,sans-serif'}}>{allTimeLoad||'—'}<span style={{fontSize:10,color:C.faint}}>kg</span></div></div>
+          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>Best e1RM</div><div style={{fontSize:16,fontWeight:700,color:C.c3,fontFamily:'Space Grotesk,sans-serif'}}>{bestE1||'—'}</div></div>
           <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>Exposures</div><div style={{fontSize:16,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{hist.length}</div></div>
         </div>
         <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>All exposures · {hist.length}</div>
@@ -4434,12 +4442,13 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
       {recentPBs.length>0 && (
         <div style={{marginBottom:18}}>
           <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>Recent PBs</div>
-          <div style={{display:'flex',gap:8}}>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {recentPBs.map((p,i)=>{ const gold=p.e1rm===standout; return (
-              <div key={i} onClick={()=>{setOpenEx(p.name);setExFull(false)}} style={{flex:1,minWidth:0,background:C.card,border:`1px solid ${gold?`${C.gold}55`:C.border}`,borderRadius:12,padding:'10px 9px',cursor:'pointer'}}>
-                <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:6}}>{gold&&<Icon name="trophy" size={12} color={C.gold}/>}<span style={{fontSize:11,color:gold?C.gold:C.green,fontWeight:600}}>NEW</span></div>
-                <div style={{fontSize:11,color:C.muted,lineHeight:1.25,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
-                <div style={{fontSize:18,fontWeight:700,color:gold?C.gold:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{p.e1rm}<span style={{fontSize:10,color:C.faint}}>kg</span></div>
+              <div key={i} onClick={()=>{setOpenEx(p.name);setExFull(false)}} style={{display:'flex',alignItems:'center',gap:10,background:C.card,border:`1px solid ${gold?`${C.gold}55`:C.border}`,borderRadius:12,padding:'12px 14px',cursor:'pointer'}}>
+                <span style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>{gold?<Icon name="trophy" size={15} color={C.gold}/>:<span style={{width:7,height:7,borderRadius:'50%',background:C.green,display:'inline-block'}}/>}<span style={{fontSize:11,color:gold?C.gold:C.green,fontWeight:700}}>NEW</span></span>
+                <span style={{flex:1,minWidth:0,fontSize:13,fontWeight:600,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
+                <span style={{fontSize:18,fontWeight:700,color:gold?C.gold:C.white,fontFamily:'Space Grotesk,sans-serif',flexShrink:0}}>{p.e1rm}<span style={{fontSize:10,color:C.faint}}>kg</span></span>
+                <span style={{fontSize:16,color:C.lift,flexShrink:0,lineHeight:1}}>&#8250;</span>
               </div>
             )})}
           </div>
@@ -4469,7 +4478,7 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
                 <span style={{fontSize:15,fontWeight:600,color:C.white,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{featuredPb.name}</span>
                 <span style={{fontSize:24,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',marginLeft:10}}>{cur||'—'}<span style={{fontSize:11,color:C.faint}}>kg</span></span>
               </div>
-              {cdata.length>=2 ? <SvgLineChart data={cdata} xKey="x" yKey="e1rm" color={C.c2} height={130} label="kg"/> : <div style={{fontSize:12,color:C.faint,padding:'14px 0',textAlign:'center'}}>Not enough data yet</div>}
+              {cdata.length>=2 ? <SvgLineChart data={cdata} xKey="x" yKey="e1rm" color={C.c2} height={130} label="kg" defaultTrend={true}/> : <div style={{fontSize:12,color:C.faint,padding:'14px 0',textAlign:'center'}}>Not enough data yet</div>}
             </>)}
           </div>
         )})()}
@@ -4495,12 +4504,12 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
           <div onClick={()=>{setDraftPins(effectivePins);setEditPins(true)}} style={{background:C.card,border:`1px dashed ${C.border}`,borderRadius:12,padding:'16px 14px',textAlign:'center',cursor:'pointer',color:C.muted,fontSize:13}}>Tap “Edit pins” to track up to 3 lifts here</div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {effectivePins.map((nm,i)=>{ const pb=(pbs||[]).find(p=>p.name===nm); const eh=((pb&&pb.history)||[]).filter(h=>h.e1rm>0); const cur=eh.length?eh[eh.length-1].e1rm:0; const all=pb?Math.round(pb.maxE1RM):0; const last5=eh.slice(-5).map(h=>h.e1rm); const atBest=cur>0&&all>0&&cur>=all; return (
+            {effectivePins.map((nm,i)=>{ const pb=(pbs||[]).find(p=>p.name===nm); const eh=((pb&&pb.history)||[]).filter(h=>h.e1rm>0); const cur=eh.length?eh[eh.length-1].e1rm:0; const allE=pb?Math.round(pb.maxE1RM):0; const allLoad=pb?Math.round(pb.maxLoad):0; const last5=eh.map(h=>h.e1rm); const atBest=cur>0&&allE>0&&cur>=allE; return (
               <div key={i} onClick={()=>{setOpenEx(nm);setExFull(false)}} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'11px 13px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,color:C.white,marginBottom:7,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nm}</div>
                   <Spark vals={last5} color={atBest?C.gold:C.c2}/>
-                  <div style={{fontSize:11,color:C.faint,marginTop:5}}>All-time {all||'—'}kg</div>
+                  <div style={{fontSize:11,color:C.faint,marginTop:5}}>All-time {allLoad||'—'}kg</div>
                 </div>
                 <div style={{textAlign:'right'}}>
                   <div style={{fontSize:11,color:C.faint,marginBottom:2}}>e1RM</div>
@@ -4546,7 +4555,7 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
             ))}
           </div>
           {listPBs.length===0 && <p style={{color:C.faint,fontSize:13,padding:'10px 4px'}}>No data yet.</p>}
-          {listPBs.map((p,i)=>{ const pct=pctOver(p); const last5=(p.history||[]).filter(h=>h.e1rm>0).slice(-5).map(h=>h.e1rm); const col=pct==null?C.muted:pct>0?C.green:pct<0?C.red:C.muted; return (
+          {listPBs.map((p,i)=>{ const pct=pctOver(p); const last5=(p.history||[]).filter(h=>h.e1rm>0).map(h=>h.e1rm); const col=pct==null?C.muted:pct>0?C.green:pct<0?C.red:C.muted; return (
             <div key={i} onClick={()=>{setOpenEx(p.name);setExFull(false)}} style={{display:'flex',alignItems:'center',gap:9,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'10px 12px',cursor:'pointer'}}>
               <span style={{flex:1,fontSize:13,fontWeight:600,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
               <Spark vals={last5} color={pct>0?C.green:pct<0?C.red:C.c2}/>
@@ -4787,8 +4796,9 @@ const MEAS_FIELDS = [
 ]
 const BLANK_MEAS = {measured_at:new Date().toISOString().split('T')[0],body_weight_kg:'',body_fat_pct:'',waist_cm:'',hips_cm:'',chest_cm:'',left_arm_cm:'',right_arm_cm:'',left_thigh_cm:'',right_thigh_cm:'',left_calf_cm:'',right_calf_cm:'',notes:''}
 
+const mDate = (v) => { const x=String(v||''); if(!x) return new Date(NaN); return new Date(x.length<=10 ? x+'T00:00:00' : x) }
 function BodyTab({clientId,measurements,addMeasurement,deleteMeasurement,saving}){
-  const cMeas=[...measurements.filter(m=>m.client_id===clientId)].sort((a,b)=>new Date(b.measured_at)-new Date(a.measured_at))
+  const cMeas=[...measurements.filter(m=>m.client_id===clientId)].sort((a,b)=>mDate(b.measured_at)-mDate(a.measured_at))
   const [adding,setAdding]=useState(false)
   const [f,setF]=useState(BLANK_MEAS)
   const ff=k=>v=>setF(p=>({...p,[k]:v}))
@@ -4798,12 +4808,12 @@ function BodyTab({clientId,measurements,addMeasurement,deleteMeasurement,saving}
     await addMeasurement(d);setF(BLANK_MEAS);setAdding(false)
   }
   const latest=cMeas[0]
-  const weightData=[...cMeas].reverse().filter(m=>m.body_weight_kg).map(m=>({date:new Date(m.measured_at+'T00:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short'}),weight:parseFloat(m.body_weight_kg)}))
+  const weightData=[...cMeas].reverse().filter(m=>m.body_weight_kg!=null&&m.body_weight_kg!=='').map(m=>({date:mDate(m.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short'}),weight:parseFloat(m.body_weight_kg)}))
   return(
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       {latest&&(
         <div>
-          <SL>Latest ({new Date(latest.measured_at+'T00:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})})</SL>
+          <SL>Latest ({mDate(latest.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})})</SL>
           <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
             {MEAS_FIELDS.filter(({key})=>latest[key]!=null).map(({key,label,unit})=>(<div key={key} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'10px 14px',minWidth:90,textAlign:'center'}}><div style={{fontSize:18,fontWeight:700,color:C.white}}>{latest[key]}</div><div style={{fontSize:10,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginTop:2}}>{label}</div><div style={{fontSize:10,color:C.faint}}>{unit}</div></div>))}
           </div>
@@ -4826,7 +4836,7 @@ function BodyTab({clientId,measurements,addMeasurement,deleteMeasurement,saving}
         {cMeas.length===0&&!adding&&<p style={{fontSize:13,color:C.faint}}>No measurements logged yet.</p>}
         {cMeas.map(m=>(
           <div key={m.id} style={{borderBottom:`1px solid ${C.border}`,padding:'9px 4px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-            <span style={{fontSize:12,color:C.amber,fontWeight:600,minWidth:90}}>{new Date(m.measured_at+'T00:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})}</span>
+            <span style={{fontSize:12,color:C.amber,fontWeight:600,minWidth:90}}>{mDate(m.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})}</span>
             {MEAS_FIELDS.filter(({key})=>m[key]!=null).map(({key,label,unit})=>(<span key={key} style={{fontSize:12,color:C.muted}}>{label}: <strong style={{color:C.white}}>{m[key]}{unit}</strong></span>))}
             <button onClick={()=>{if(window.confirm('Delete measurement?'))deleteMeasurement(m.id)}} style={{background:'none',border:'none',color:C.faint,cursor:'pointer',fontSize:12,marginLeft:'auto',padding:0}}>✕</button>
           </div>
@@ -4835,6 +4845,85 @@ function BodyTab({clientId,measurements,addMeasurement,deleteMeasurement,saving}
     </div>
   )
 }
+
+function CoachProgressOverview({ clientId, client, sessions, allSessions, programs, weeks, measurements, go, av=0, updateSession }){
+  const [showDetail, setShowDetail] = React.useState(false)
+  const cSess = sessions
+  const completed = cSess.filter(s=>computeSessionStatus(s)==='complete').length
+  const adherence = cSess.length ? Math.round(completed/cSess.length*100) : 0
+  const pbs = getClientPBs(clientId, cSess, allSessions, weeks, programs)
+  const pbEvents = cSess.reduce((a,s)=>a+getSessionPBs(s.id,pbs).length,0)
+  const cMeas = [...measurements.filter(m=>m.client_id===clientId)].filter(m=>m.body_weight_kg!=null&&m.body_weight_kg!=='').sort((a,b)=>mDate(a.measured_at)-mDate(b.measured_at))
+  const wFirst = cMeas[0], wLast = cMeas[cMeas.length-1]
+
+  const cProgs = [...programs.filter(p=>p.client_id===clientId)].sort((a,b)=>{
+    const ac=a.status==='current'?1:0, bc=b.status==='current'?1:0; if(ac!==bc) return bc-ac
+    if(a.start_date&&b.start_date) return new Date(b.start_date)-new Date(a.start_date)
+    if(a.start_date) return -1; if(b.start_date) return 1
+    const na=parseInt((a.name||'').match(/\d+/)?.[0]||0), nb=parseInt((b.name||'').match(/\d+/)?.[0]||0); if(na!==nb) return nb-na
+    return new Date(b.created_at||0)-new Date(a.created_at||0)
+  })
+
+  const fmtMY = (d) => { if(!d) return null; try{ return new Date(String(d).length<=10?d+'T00:00:00':d).toLocaleDateString('en-AU',{month:'short',year:'numeric'}) }catch(e){ return null } }
+  const stat = (label, value, color) => (
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 13px'}}>
+      <div style={{fontSize:11,color:C.muted}}>{label}</div>
+      <div style={{fontSize:21,fontWeight:700,color:color||C.white,fontFamily:'Space Grotesk,sans-serif',marginTop:2,lineHeight:1.15}}>{value}</div>
+    </div>
+  )
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:18}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9}}>
+        {stat('Sessions logged', completed)}
+        {stat('Adherence', adherence+'%', adherence>=80?C.green:adherence>=50?C.orange:C.red)}
+        {stat('Body weight', wLast ? (wFirst&&wFirst!==wLast
+            ? <span>{wFirst.body_weight_kg} <span style={{color:C.faint,fontSize:14}}>&rarr;</span> {wLast.body_weight_kg}<span style={{fontSize:12,color:C.muted}}> kg</span></span>
+            : <span>{wLast.body_weight_kg}<span style={{fontSize:12,color:C.muted}}> kg</span></span>) : '\u2014')}
+        {stat('Personal bests', pbEvents, C.amber)}
+      </div>
+
+      <div>
+        <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.06em',marginBottom:9}}>TRAINING BLOCKS</div>
+        {cProgs.length===0 && <Card style={{textAlign:'center',padding:26}}><p style={{color:C.muted,margin:0,fontSize:13}}>No programs yet.</p></Card>}
+        <div style={{display:'flex',flexDirection:'column',gap:9}}>
+          {cProgs.map(prog=>{
+            const ps = cSess.filter(s=>s.program_id===prog.id)
+            const done = ps.filter(s=>computeSessionStatus(s)==='complete').length
+            const pct = ps.length ? Math.round(done/ps.length*100) : 0
+            const progPBs = ps.reduce((a,s)=>a+getSessionPBs(s.id,pbs).length,0)
+            const isCur = prog.status==='current'
+            const start = fmtMY(prog.start_date)
+            return (
+              <div key={prog.id} onClick={()=>go('program',{programId:prog.id,clientId})} style={{background:isCur?'#140F08':C.card,border:`1px solid ${isCur?`${C.amber}55`:C.border}`,borderRadius:12,padding:'13px 14px',cursor:'pointer'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
+                  <span style={{flex:1,minWidth:0,fontSize:14,fontWeight:600,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{prog.name}</span>
+                  {isCur
+                    ? <span style={{fontSize:10,fontWeight:700,color:C.amber,background:`${C.amber}22`,borderRadius:20,padding:'2px 9px'}}>Current</span>
+                    : <span style={{fontSize:10,fontWeight:700,color:pct>=100?C.green:C.muted,background:pct>=100?`${C.green}1A`:'transparent',borderRadius:20,padding:'2px 9px'}}>{pct}%</span>}
+                  <span style={{fontSize:16,color:C.faint}}>&#8250;</span>
+                </div>
+                <div style={{fontSize:11,color:C.muted}}>{[start, prog.phase, `${done} / ${ps.length} sessions`].filter(Boolean).join(' \u00b7 ')}</div>
+                {isCur && <div style={{height:6,background:C.bg,borderRadius:4,overflow:'hidden',marginTop:8}}><div style={{height:'100%',width:`${pct}%`,background:C.amber,borderRadius:4}}/></div>}
+                {progPBs>0 && <div style={{display:'flex',alignItems:'center',gap:5,marginTop:8,fontSize:12,color:C.green}}><Icon name="trendingUp" size={13} color={C.green}/>{progPBs} new PB{progPBs>1?'s':''} this block</div>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div>
+        <button onClick={()=>setShowDetail(v=>!v)} style={{width:'100%',background:showDetail?`${C.c1}10`:C.ink,border:`1px solid ${showDetail?`${C.c2}40`:C.border}`,borderRadius:10,padding:'12px 16px',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}}>
+          <Icon name="trendingUp" size={15} color={showDetail?C.c3:C.muted}/>
+          <span style={{flex:1,textAlign:'left',fontSize:13,fontWeight:700,color:showDetail?C.c3:C.muted}}>PBs &amp; trends by exercise</span>
+          <span style={{fontSize:13,color:C.faint,transform:showDetail?'rotate(90deg)':'none',transition:'transform 0.15s'}}>&#8250;</span>
+        </button>
+        {showDetail && <div style={{marginTop:12}}><ProgressTab clientId={clientId} sessions={cSess} allSessions={allSessions} weeks={weeks} programs={programs} av={av} updateSession={updateSession}/></div>}
+      </div>
+    </div>
+  )
+}
+
 
 // ─── CLIENT DASHBOARD ─────────────────────────────────────────────────────────
 function ClientDashboard({clientId,...props}){
@@ -4854,8 +4943,8 @@ function ClientDashboard({clientId,...props}){
   const doneSess=clientSess.filter(s=>computeSessionStatus(s)==='complete').length
   const cGoals=goals.filter(g=>g.client_id===clientId&&g.status==='active')
   const activeFlags=generateAutoFlags(client,clientSess,sessions,programs,weeks).length+flags.filter(f=>f.client_id===clientId&&!f.is_resolved).length
-  const latestMeas=[...measurements.filter(m=>m.client_id===clientId)].sort((a,b)=>new Date(b.measured_at)-new Date(a.measured_at))[0]
-  const TABS = [{id:'overview',l:'Overview'},{id:'programs',l:'Programs'},{id:'progress',l:'Progress'},{id:'body',l:'Body'},{id:'calendar',l:'Calendar'}]
+  const latestMeas=[...measurements.filter(m=>m.client_id===clientId)].sort((a,b)=>mDate(b.measured_at)-mDate(a.measured_at))[0]
+  const TABS = [{id:'overview',l:'Overview'},{id:'profile',l:'Profile'},{id:'programs',l:'Programs'},{id:'progress',l:'Progress'},{id:'body',l:'Body'},{id:'calendar',l:'Calendar'}]
   return(
     <div style={{maxWidth:960,margin:'0 auto'}}>
       <div style={{background:`linear-gradient(135deg, ${C.ink} 0%, #0a0f1e 100%)`,borderBottom:`1px solid ${C.border}`,padding:'20px 20px 0'}}>
@@ -4908,8 +4997,9 @@ function ClientDashboard({clientId,...props}){
           </div>
         )}
         {tab==='programs'&&<ClientDetail {...props} clientId={clientId}/>}
-        {tab==='progress'&&<ProgressTab clientId={clientId} sessions={sessions.filter(s=>s.client_id===clientId)} allSessions={sessions} weeks={weeks} programs={programs} av={props.av||0} updateSession={props.updateSession}/>}
+        {tab==='progress'&&<CoachProgressOverview clientId={clientId} client={client} sessions={sessions.filter(s=>s.client_id===clientId)} allSessions={sessions} programs={programs} weeks={weeks} measurements={measurements} go={go} av={props.av||0} updateSession={props.updateSession}/>}
         {tab==='body'&&<BodyTab clientId={clientId} measurements={measurements} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement} saving={saving}/>}
+        {tab==='profile'&&<CoachClientProfile client={client} updateClient={props.updateClient}/>}
         {tab==='calendar'&&<CalendarView sessions={sessions.filter(s=>s.client_id===clientId)} weeks={weeks} programs={programs} clients={clients} go={go} isClientView={true}/>}
       </div>
     </div>
@@ -5429,7 +5519,7 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving }) {
   const getPB = name => {
     let best=0
     sessions.forEach(s=>safeExercises(s).filter(e=>e.name===name).forEach(ex=>{
-      ;(ex.loggedSets||[]).forEach(ls=>{ if(ls.skipped||ls.excluded) return; const _m=getExMode(name); if(_m==='isometric'||_m==='assisted'||_m==='band') return; parseEfforts(ls.completedLoad,ls.completedReps).forEach(({load,reps})=>{ const e1=calcE1RM(load,reps); if(e1&&e1>best)best=e1 }) })
+      ;(ex.loggedSets||[]).forEach(ls=>{ if(ls.excluded||(ls.skipped&&!ls.completedLoad)) return; const _m=getExMode(name); if(_m==='isometric'||_m==='assisted'||_m==='band') return; parseEfforts(ls.completedLoad,ls.completedReps).forEach(({load,reps})=>{ const e1=calcE1RM(load,reps); if(e1&&e1>best)best=e1 }) })
     }))
     return best>0 ? `${Math.round(best*10)/10}kg e1RM` : null
   }
@@ -6306,7 +6396,326 @@ function ClientSessionSummary({ sess, programName, status, onResume, pbHits }){
     </div>
   )
 }
-function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
+function StreakHeatmap({ levelByDay, current, longest, total }){
+  const DAY=86400000
+  const norm=d=>{ const x=new Date(d); x.setHours(0,0,0,0); return x }
+  const today=norm(new Date())
+  const mondayOffset=(today.getDay()+6)%7
+  const lastMon=new Date(today.getTime()-mondayOffset*DAY)
+  const WEEKS=53
+  const start=new Date(lastMon.getTime()-(WEEKS-1)*7*DAY)
+  const cols=[]
+  for(let w=0;w<WEEKS;w++){ const days=[]; for(let d=0;d<7;d++){ const dt=norm(new Date(start.getTime()+(w*7+d)*DAY)); const dn=dt.getTime(); const future=dn>today.getTime(); days.push({dn,dt,lvl:future?-1:(levelByDay[dn]||0)}) } cols.push(days) }
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  let lm=-1; const monthLabels=cols.map((c,i)=>{ const m=c[0].dt.getMonth(); if(m!==lm){lm=m; return {i,label:MON[m]}} return null }).filter(Boolean)
+  const cc=lvl=> lvl<0?'transparent': lvl===0?C.lift: lvl===1?`${C.green}40`: lvl===2?`${C.green}73`: lvl===3?`${C.green}B3`: C.green
+  const cell=12, gap=3, colW=cell+gap, gridW=cols.length*colW
+  const Stat=({label,value})=>(<div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'12px 10px',textAlign:'center'}}><div style={{fontSize:24,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{value}</div><div style={{fontSize:10,color:C.muted,marginTop:4,fontWeight:600}}>{label}</div></div>)
+  return (
+    <div>
+      <div style={{display:'flex',gap:8,marginBottom:16}}>
+        <Stat label="Current streak" value={current}/>
+        <Stat label="Longest streak" value={longest}/>
+        <Stat label="Sessions logged" value={total}/>
+      </div>
+      <div style={{display:'flex',gap:6}}>
+        <div style={{display:'flex',flexDirection:'column',paddingTop:18,flexShrink:0}}>
+          {['M','','W','','F','',''].map((d,i)=>(<div key={i} style={{height:cell,marginBottom:gap,fontSize:9,color:C.faint,lineHeight:`${cell}px`}}>{d}</div>))}
+        </div>
+        <div style={{overflowX:'auto',paddingBottom:4}}>
+          <div style={{position:'relative',height:16,width:gridW}}>
+            {monthLabels.map(m=>(<span key={m.i} style={{position:'absolute',left:m.i*colW,fontSize:9.5,color:C.muted,fontWeight:600}}>{m.label}</span>))}
+          </div>
+          <div style={{display:'flex',gap:`${gap}px`}}>
+            {cols.map((week,wi)=>(<div key={wi} style={{display:'flex',flexDirection:'column',gap:`${gap}px`}}>{week.map((dy,di)=>(<div key={di} title={dy.lvl<0?'':dy.dt.toLocaleDateString('en-AU',{day:'numeric',month:'short'})} style={{width:cell,height:cell,borderRadius:3,background:cc(dy.lvl),border:dy.lvl===0?`1px solid ${C.border}`:'none'}}/>))}</div>))}
+          </div>
+        </div>
+      </div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:6,marginTop:12}}>
+        <span style={{fontSize:10,color:C.faint}}>Less</span>
+        {[0,1,2,3,4].map(l=>(<span key={l} style={{width:11,height:11,borderRadius:3,background:cc(l),border:l===0?`1px solid ${C.border}`:'none'}}/>))}
+        <span style={{fontSize:10,color:C.faint}}>More</span>
+      </div>
+      <div style={{fontSize:11,color:C.faint,marginTop:14,textAlign:'center',lineHeight:1.5}}>Each square is a day. Greener = more work logged.</div>
+    </div>
+  )
+}
+
+function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracked=0 }){
+  const c = client || {}
+  const hsInit = (c.health_screen && typeof c.health_screen==='object') ? c.health_screen : {}
+  const [form, setForm] = React.useState({
+    dob:c.dob||'', sex:c.sex||'', units:c.units||'kg', phone:c.phone||'',
+    height_cm:c.height_cm??'', start_weight:c.start_weight??'',
+    experience_years:c.experience_years??'', train_days:c.train_days??'', trains_at:c.trains_at||'', equipment:c.equipment||'', sport:c.sport||'',
+    goal:c.goal||'', goal_target_date:c.goal_target_date||'', goal_why:c.goal_why||'',
+    injury_history:c.injury_history||'', current_injuries:c.current_injuries||'', medications:c.medications||'', allergies:c.allergies||'', medical_notes:c.medical_notes||'',
+    emergency_name:c.emergency_name||'', emergency_phone:c.emergency_phone||''
+  })
+  const [hsForm, setHsForm] = React.useState(hsInit)
+  const [open, setOpen] = React.useState({ personal:true })
+  const [saved, setSaved] = React.useState(false)
+
+  const setF = (k,v)=> setForm(f=>({...f,[k]:v}))
+  const flash = ()=>{ setSaved(true); setTimeout(()=>setSaved(false), 1400) }
+  const save = (patch)=>{ updateClient(client.id, patch); flash() }
+  const saveField = (k)=> save({ [k]: form[k]==='' ? null : form[k] })        // text/number on blur
+  const saveNow = (k,v)=>{ setF(k,v); save({ [k]: v==='' ? null : v }) }       // selects / dates
+  const toggleHS = (k,v)=>{ const n={...hsForm,[k]:v}; setHsForm(n); save({ health_screen:n }) }
+
+  const ageOf = (d)=>{ if(!d) return null; const t=new Date(), b=new Date(d); let a=t.getFullYear()-b.getFullYear(); const m=t.getMonth()-b.getMonth(); if(m<0||(m===0&&t.getDate()<b.getDate())) a--; return (a>=0&&a<120)?a:null }
+  const yrs = ageOf(form.dob)
+
+  const HS_ITEMS = [
+    {k:'heart',  q:'Heart condition or chest pain?'},
+    {k:'dizzy',  q:'Dizziness or blackouts?'},
+    {k:'meds',   q:'Currently taking any medication?'},
+    {k:'preg',   q:'Pregnant now or recently?'},
+    {k:'doctor', q:'Ever told by a doctor to avoid exercise?'},
+    {k:'bone',   q:'Bone or joint problem made worse by exercise?'},
+  ]
+  const flags = HS_ITEMS.filter(i=>hsForm[i.k]===true).length
+
+  const tally = ['dob','sex','height_cm','start_weight','experience_years','train_days','trains_at','sport','goal','phone','emergency_name','emergency_phone']
+  const hsAnswered = HS_ITEMS.every(i=>typeof hsForm[i.k]==='boolean')
+  const filled = tally.filter(k=>form[k]!=='' && form[k]!=null).length + (hsAnswered?1:0)
+  const pct = Math.round(filled/(tally.length+1)*100)
+
+  const initials = (client.name||'?').split(' ').map(n=>n[0]).slice(0,2).join('').toUpperCase()
+
+  const inp = {background:C.ink,border:`1px solid ${C.border}`,borderRadius:8,color:C.white,fontSize:13,padding:'9px 10px',width:'100%',outline:'none',fontFamily:'inherit',boxSizing:'border-box'}
+  const txt  = (k,ph)=> <input value={form[k]} onChange={e=>setF(k,e.target.value)} onBlur={()=>saveField(k)} placeholder={ph||''} style={inp}/>
+  const num  = (k,ph,unit)=> <div style={{position:'relative'}}><input type="number" inputMode="decimal" value={form[k]} onChange={e=>setF(k,e.target.value)} onBlur={()=>saveField(k)} placeholder={ph||''} style={{...inp,paddingRight:unit?38:10}}/>{unit&&<span style={{position:'absolute',right:11,top:10,fontSize:12,color:C.faint}}>{unit}</span>}</div>
+  const area = (k,ph)=> <textarea value={form[k]} onChange={e=>setF(k,e.target.value)} onBlur={()=>saveField(k)} placeholder={ph||''} rows={2} style={{...inp,resize:'vertical',lineHeight:1.45}}/>
+  const sel  = (k,opts)=> <select value={form[k]} onChange={e=>saveNow(k,e.target.value)} style={inp}><option value="">—</option>{opts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}</select>
+  const dateF= (k)=> <input type="date" value={form[k]} onChange={e=>saveNow(k,e.target.value)} style={inp}/>
+
+  const field = (label,control,req)=> (
+    <div key={label} style={{marginBottom:11}}>
+      <div style={{fontSize:11,color:C.muted,marginBottom:5}}>{label}{req&&<span style={{color:C.amber}}> *</span>}</div>
+      {control}
+    </div>
+  )
+
+  const yn = (k)=>{ const v=hsForm[k]; return (
+    <div style={{display:'flex',gap:6,flexShrink:0}}>
+      {[['No',false],['Yes',true]].map(([lab,val])=>{ const on=v===val, danger=val===true; return (
+        <button key={lab} onClick={()=>toggleHS(k,val)} style={{padding:'5px 14px',borderRadius:7,fontSize:12,fontWeight:600,cursor:'pointer',border:`1px solid ${on?(danger?C.orange:C.green):C.border}`,background:on?(danger?`${C.orange}22`:`${C.green}22`):'transparent',color:on?(danger?C.orange:C.green):C.muted}}>{lab}</button>
+      )})}
+    </div>
+  )}
+
+  const section = (id,icon,label,children,iconColor,badge)=>{ const o=!!open[id]; return (
+    <div key={id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:13,marginBottom:9,overflow:'hidden'}}>
+      <div onClick={()=>setOpen(p=>({...p,[id]:!o}))} style={{display:'flex',alignItems:'center',gap:10,padding:'13px 14px',cursor:'pointer'}}>
+        <Icon name={icon} size={16} color={iconColor||C.c2}/>
+        <span style={{flex:1,fontSize:13,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{label}</span>
+        {badge}
+        <span style={{fontSize:16,color:C.faint,transform:o?'rotate(90deg)':'none',transition:'transform .15s',display:'inline-block'}}>›</span>
+      </div>
+      {o&&<div style={{padding:'0 14px 14px'}}>{children}</div>}
+    </div>
+  )}
+
+  return (<>
+    <div style={{marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+      <h2 style={{fontSize:22,fontWeight:600,color:C.white}}>My Profile</h2>
+      <span style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:C.green,fontWeight:600,opacity:saved?1:0,transition:'opacity .2s'}}><Icon name="check" size={12} color={C.green}/>Saved</span>
+    </div>
+
+    <div style={{display:'flex',alignItems:'center',gap:13,marginBottom:14}}>
+      <div style={{width:54,height:54,borderRadius:'50%',background:`linear-gradient(135deg,${C.c2},${C.c3})`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{initials}</div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:18,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{client.name}</div>
+        <div style={{fontSize:12,color:C.muted,marginTop:2}}>{[yrs!=null?`${yrs} yrs`:null, form.sport||null, form.experience_years!=='' && form.experience_years!=null?`${form.experience_years} yrs training`:null].filter(Boolean).join(' · ') || 'Tap a section to fill in your details'}</div>
+      </div>
+    </div>
+
+    <div style={{marginBottom:16}}>
+      <div style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
+        <span style={{fontSize:10,color:C.faint,fontWeight:700,letterSpacing:'0.06em'}}>PROFILE {pct}% COMPLETE</span>
+        {pct>=80&&<span style={{fontSize:10,color:C.green,fontWeight:700}}>Looking good</span>}
+      </div>
+      <div style={{height:6,background:C.ink,borderRadius:4,overflow:'hidden'}}>
+        <div style={{height:'100%',width:`${pct}%`,background:pct>=80?C.green:`linear-gradient(90deg,${C.orange},${C.green})`,borderRadius:4,transition:'width .3s'}}/>
+      </div>
+    </div>
+
+    {section('personal','user','Personal',<>
+      {field('Birthday', dateF('dob'), true)}
+      {field('Sex', sel('sex',[{v:'Male',l:'Male'},{v:'Female',l:'Female'},{v:'Other',l:'Other / prefer not to say'}]))}
+      {field('Preferred units', sel('units',[{v:'kg',l:'Kilograms (kg)'},{v:'lb',l:'Pounds (lb)'}]))}
+      {field('Phone', txt('phone','04xx xxx xxx'))}
+    </>)}
+
+    {section('body','sliders','Body',<>
+      {field('Height', num('height_cm','183','cm'))}
+      {field('Starting weight', num('start_weight','88', form.units||'kg'))}
+      <div style={{fontSize:11,color:C.faint,marginTop:2,lineHeight:1.4}}>Your ongoing weight is tracked over time in the Progress tab.</div>
+    </>)}
+
+    {section('training','dumbbell','Training',<>
+      {field('Training experience', num('experience_years','4','yrs'))}
+      {field('Days per week you can train', num('train_days','4'))}
+      {field('Where do you train?', sel('trains_at',[{v:'Full gym',l:'Full gym'},{v:'Home gym',l:'Home gym'},{v:'Minimal equipment',l:'Minimal equipment'},{v:'Bodyweight only',l:'Bodyweight only'}]))}
+      {field('Equipment you have access to', area('equipment','Barbell, dumbbells, rack, bands…'))}
+      {field('Sport / focus', txt('sport','Rugby, general strength, etc.'))}
+    </>)}
+
+    {section('health','alert','Health screen', <>
+      <div style={{fontSize:11,color:C.faint,marginBottom:10,lineHeight:1.45}}>A quick safety check so your coach can train you appropriately. Your answers are private to your coach.</div>
+      {HS_ITEMS.map(it=>(
+        <div key={it.k} style={{display:'flex',alignItems:'center',gap:10,padding:'9px 0',borderTop:`1px solid ${C.border}`}}>
+          <span style={{flex:1,fontSize:12.5,color:C.white,lineHeight:1.35}}>{it.q}</span>{yn(it.k)}
+        </div>
+      ))}
+      <div style={{marginTop:14}}>
+        {field('Injury history', area('injury_history','Past injuries, surgeries, dates…'))}
+        {field('Current injuries / niggles', area('current_injuries','Anything bothering you right now'))}
+        {field('Medications', area('medications',''))}
+        {field('Allergies', area('allergies',''))}
+        {field('Other medical notes', area('medical_notes',''))}
+      </div>
+    </>, flags>0?C.orange:C.c2, flags>0?<span style={{fontSize:10,color:C.orange,fontWeight:700,background:`${C.orange}20`,borderRadius:20,padding:'2px 9px'}}>{flags} flag{flags>1?'s':''}</span>:null)}
+
+    {section('goals','check','Goals',<>
+      {field('Primary goal', txt('goal','Build lower-body strength'))}
+      {field('Target date', dateF('goal_target_date'))}
+      {field('Why this matters to you', area('goal_why','What is driving this goal?'))}
+    </>)}
+
+    {section('contact','bell','Emergency contact',<>
+      {field('Contact name', txt('emergency_name','Full name'))}
+      {field('Contact phone', txt('emergency_phone','04xx xxx xxx'))}
+    </>)}
+
+    <div style={{display:'flex',gap:8,marginTop:6,marginBottom:4}}>
+      {[{v:totalDone,l:'Sessions',ic:'dumbbell'},{v:streak,l:'Streak',ic:'trendingUp'},{v:tracked,l:'Tracked',ic:'trophy'}].map((x,i)=>(
+        <div key={i} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'13px 10px',textAlign:'center'}}>
+          <Icon name={x.ic} size={14} color={C.amber}/>
+          <div style={{fontSize:20,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:'5px 0 2px',lineHeight:1}}>{x.v}</div>
+          <div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em'}}>{x.l}</div>
+        </div>
+      ))}
+    </div>
+  </>)
+}
+
+
+function CoachClientProfile({ client, updateClient }){
+  const [edit,setEdit] = React.useState(false)
+  const c = client || {}
+  const hs = (c.health_screen && typeof c.health_screen==='object') ? c.health_screen : {}
+  const HS = [
+    {k:'heart',  q:'Heart condition / chest pain'},
+    {k:'dizzy',  q:'Dizziness or blackouts'},
+    {k:'meds',   q:'Currently on medication'},
+    {k:'preg',   q:'Pregnant now or recently'},
+    {k:'doctor', q:'Doctor advised to avoid exercise'},
+    {k:'bone',   q:'Bone / joint problem worsened by exercise'},
+  ]
+  const flagged = HS.filter(i=>hs[i.k]===true)
+  const ageOf = (d)=>{ if(!d) return null; const t=new Date(), b=new Date(d); let a=t.getFullYear()-b.getFullYear(); const m=t.getMonth()-b.getMonth(); if(m<0||(m===0&&t.getDate()<b.getDate())) a--; return (a>=0&&a<120)?a:null }
+  const yrs = ageOf(c.dob)
+  const fmtDate = (d)=>{ if(!d) return null; try{ return new Date(d+'T00:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}) }catch(e){ return d } }
+  const u = c.units||'kg'
+
+  if(edit) return (
+    <div>
+      <Row style={{justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+        <span style={{fontSize:13,color:C.muted}}>Editing {c.name}’s profile</span>
+        <Btn label="Done" variant="secondary" small onClick={()=>setEdit(false)}/>
+      </Row>
+      <ClientProfilePage client={client} updateClient={updateClient}/>
+    </div>
+  )
+
+  const row = (label,val)=> (val===0||val) ? (
+    <div key={label} style={{display:'flex',justifyContent:'space-between',gap:12,padding:'9px 0',borderTop:`1px solid ${C.border}`}}>
+      <span style={{fontSize:12,color:C.muted,flexShrink:0}}>{label}</span>
+      <span style={{fontSize:13,color:C.white,fontWeight:500,textAlign:'right',whiteSpace:'pre-wrap'}}>{val}</span>
+    </div>
+  ) : null
+
+  const block = (title,rows)=>{ const kids=rows.filter(Boolean); if(kids.length===0) return null; return (
+    <div key={title} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'4px 15px 12px',marginBottom:10}}>
+      <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',padding:'12px 0 2px'}}>{title}</div>
+      {kids}
+    </div>
+  )}
+
+  const anyData = ['dob','sex','height_cm','start_weight','experience_years','train_days','trains_at','equipment','sport','goal','goal_why','injury_history','current_injuries','medications','allergies','medical_notes','emergency_name','phone'].some(k=>c[k]!=null && c[k]!=='') || flagged.length>0
+
+  return (<div>
+    <Row style={{justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+      <div>
+        <div style={{fontSize:17,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{c.name}</div>
+        <div style={{fontSize:12,color:C.muted,marginTop:2}}>{[yrs!=null?`${yrs} yrs`:null,c.sex||null,c.sport||null].filter(Boolean).join(' · ')||'No details yet'}</div>
+      </div>
+      <Btn label="Edit profile" variant="secondary" small onClick={()=>setEdit(true)}/>
+    </Row>
+
+    {(flagged.length>0 || c.current_injuries || c.medications || c.allergies || c.emergency_name) && (
+      <div style={{background:`${C.orange}10`,border:`1px solid ${flagged.length>0?C.orange:C.border}`,borderRadius:12,padding:'13px 15px',marginBottom:12}}>
+        <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:9}}>
+          <Icon name="alert" size={15} color={flagged.length>0?C.orange:C.muted}/>
+          <span style={{fontSize:12,fontWeight:700,color:flagged.length>0?C.orange:C.white,textTransform:'uppercase',letterSpacing:'0.05em'}}>Safety{flagged.length>0?` · ${flagged.length} health flag${flagged.length>1?'s':''}`:''}</span>
+        </div>
+        {flagged.length>0 && <div style={{marginBottom:10}}>{flagged.map(f=>(<div key={f.k} style={{display:'flex',gap:7,alignItems:'flex-start',marginBottom:4}}><span style={{color:C.orange,fontSize:12,lineHeight:1.4}}>⚠</span><span style={{fontSize:12.5,color:C.white,lineHeight:1.4}}>{f.q}</span></div>))}</div>}
+        {c.current_injuries && <div style={{marginBottom:10}}><div style={{fontSize:10,color:C.faint,fontWeight:700,marginBottom:2}}>CURRENT INJURIES</div><div style={{fontSize:13,color:C.white,lineHeight:1.4,whiteSpace:'pre-wrap'}}>{c.current_injuries}</div></div>}
+        {(c.medications||c.allergies) && <div style={{marginBottom:10}}>{c.medications&&<div style={{fontSize:12.5,color:C.white,lineHeight:1.5}}><span style={{color:C.faint}}>Meds: </span>{c.medications}</div>}{c.allergies&&<div style={{fontSize:12.5,color:C.white,lineHeight:1.5}}><span style={{color:C.faint}}>Allergies: </span>{c.allergies}</div>}</div>}
+        {c.emergency_name && <div><div style={{fontSize:10,color:C.faint,fontWeight:700,marginBottom:2}}>EMERGENCY CONTACT</div><div style={{fontSize:13,color:C.white}}>{c.emergency_name}{c.emergency_phone?` · ${c.emergency_phone}`:''}</div></div>}
+      </div>
+    )}
+
+    {!anyData && <Card style={{textAlign:'center',padding:30}}><p style={{color:C.muted,fontSize:13,margin:0}}>{c.name} hasn’t filled in their profile yet.</p></Card>}
+
+    {block('Personal',[row('Age',yrs!=null?`${yrs}`:null),row('Sex',c.sex),row('Birthday',fmtDate(c.dob)),row('Units',c.units),row('Phone',c.phone)])}
+    {block('Body',[row('Height',c.height_cm?`${c.height_cm} cm`:null),row('Starting weight',c.start_weight?`${c.start_weight} ${u}`:null)])}
+    {block('Training',[row('Experience',c.experience_years?`${c.experience_years} yrs`:null),row('Days / week',c.train_days),row('Trains at',c.trains_at),row('Equipment',c.equipment),row('Sport / focus',c.sport)])}
+    {block('Goals',[row('Primary goal',c.goal),row('Target date',fmtDate(c.goal_target_date)),row('Why',c.goal_why)])}
+    {block('Health detail',[row('Injury history',c.injury_history),row('Medical notes',c.medical_notes)])}
+  </div>)
+}
+
+
+function ClientWeightCard({ clientId, measurements, addMeasurement, units='kg' }){
+  const [val,setVal] = React.useState('')
+  const [saving,setSaving] = React.useState(false)
+  const cMeas = [...(measurements||[]).filter(m=>m.client_id===clientId && m.body_weight_kg!=null && m.body_weight_kg!=='')].sort((a,b)=>mDate(a.measured_at)-mDate(b.measured_at))
+  const latest = cMeas[cMeas.length-1]
+  const data = cMeas.map(m=>({date:mDate(m.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short'}),weight:parseFloat(m.body_weight_kg)}))
+  const log = async () => {
+    const w = parseFloat(val); if(!w||w<=0) return
+    setSaving(true)
+    try{ await addMeasurement({client_id:clientId, measured_at:new Date().toISOString().split('T')[0], body_weight_kg:w}) }catch(e){}
+    setVal(''); setSaving(false)
+  }
+  return (
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:16,marginBottom:18}}>
+      <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,marginBottom:12}}>
+        <div>
+          <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Body weight</div>
+          {latest
+            ? <div style={{fontSize:28,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{latest.body_weight_kg}<span style={{fontSize:14,color:C.muted,fontWeight:600}}> {units}</span></div>
+            : <div style={{fontSize:14,color:C.muted}}>No weight logged yet</div>}
+          {latest && <div style={{fontSize:11,color:C.faint,marginTop:4}}>Last logged {mDate(latest.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short'})}</div>}
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8}}>
+        <div style={{position:'relative',flex:1}}>
+          <input value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')log()}} type="number" inputMode="decimal" placeholder="Today's weight" style={{width:'100%',boxSizing:'border-box',background:C.ink,border:`1px solid ${C.border}`,borderRadius:9,color:C.white,fontSize:14,padding:'10px 40px 10px 12px',outline:'none',fontFamily:'inherit'}}/>
+          <span style={{position:'absolute',right:12,top:11,fontSize:12,color:C.faint}}>{units}</span>
+        </div>
+        <button onClick={log} disabled={saving||!val} style={{background:val?C.amber:C.ink,color:val?C.bg:C.faint,border:`1px solid ${val?C.amber:C.border}`,borderRadius:9,fontSize:13,fontWeight:700,padding:'0 18px',cursor:val?'pointer':'default',flexShrink:0}}>Log</button>
+      </div>
+      {data.length>=2 && <div style={{marginTop:14}}><SvgLineChart data={data} xKey="date" yKey="weight" color={C.c2} height={130} label={units}/></div>}
+    </div>
+  )
+}
+
+
+function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
@@ -6316,6 +6725,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const [sessionFull, setSessionFull] = useState(false)
   const openSess = (id, full=false) => { setSessionFull(!!full); setOpenSessionId(id) }
   const [progressEx, setProgressEx] = useState(null)
+  const [showStreak, setShowStreak] = useState(false)
 
   const sessDone = s => { try { return computeSessionStatus(s)==='complete' } catch(e){} return s.status==='completed' }
   const sessSkipped = s => s.status==='skipped'
@@ -6381,6 +6791,13 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   }
   if(streak===0) streakAtRisk = false
   const totalDone = sessions.filter(sessDone).length
+  const setsByDay = {}
+  datedSessions.forEach(x=>{ if(sessDone(x.sess)){ const dn=dayN(x.date); const n=safeExercises(x.sess).reduce((a,e)=>a+(e.loggedSets||[]).filter(setIsDone).length,0); setsByDay[dn]=Math.max(setsByDay[dn]||0,n) } })
+  const levelByDay = {}
+  Object.keys(setsByDay).forEach(k=>{ const n=setsByDay[k]; levelByDay[k]= n>=26?4: n>=16?3: n>=8?2: 1 })
+  let _run=0,_best=0; const _chron=streakItems.slice().sort((a,b)=>a.dn-b.dn)
+  for(const it of _chron){ if(it.kind==='done'){ _run++; if(_run>_best)_best=_run; continue } if(it.kind==='skip'||it.kind==='pending') continue; const _f=doneDayNs.some(cd=>cd>it.dn&&cd<=it.dn+2*DAY); if(_f) continue; _run=0 }
+  const longestStreak=_best
 
   // PBs
   const pbs = getClientPBs(client.id, sessions, allSessions, weeks, programs)
@@ -6461,12 +6878,25 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
                 <div style={{fontSize:11,color:C.faint,marginTop:1}}>{weeklyScheduled-weeklyDone>0?`${weeklyScheduled-weeklyDone} to go`:weeklyScheduled>0?'All done':'No sessions'}</div>
               </div>
             </div>
-            <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'16px 14px',display:'flex',flexDirection:'column',justifyContent:'center'}}>
-              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><Icon name="activity" size={14} color={C.amber}/><span style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:'uppercase',letterSpacing:'0.1em'}}>Streak</span></div>
+            <div onClick={()=>setShowStreak(true)} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'16px 14px',display:'flex',flexDirection:'column',justifyContent:'center',cursor:'pointer',position:'relative'}}>
+              <span style={{position:'absolute',top:11,right:12,fontSize:16,color:C.lift,lineHeight:1}}>&#8250;</span>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><Icon name="trendingUp" size={14} color={C.amber}/><span style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:'uppercase',letterSpacing:'0.1em'}}>Streak</span></div>
               <div style={{fontSize:32,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{streak}</div>
               <div style={{fontSize:11,color:C.faint,marginTop:4}}>{streak===1?'session in a row':'sessions in a row'} · {totalDone} all-time</div>
             </div>
           </div>
+
+          {showStreak && (
+            <div onClick={()=>setShowStreak(false)} style={{position:'fixed',inset:0,zIndex:300,background:'rgba(4,7,15,0.82)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+              <div onClick={e=>e.stopPropagation()} style={{width:'100%',maxWidth:540,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'18px 16px 28px',maxHeight:'88vh',overflowY:'auto'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+                  <span style={{fontSize:16,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em'}}>TRAINING STREAK</span>
+                  <button onClick={()=>setShowStreak(false)} style={{background:'none',border:'none',color:C.muted,fontSize:24,cursor:'pointer',lineHeight:1}}>&times;</button>
+                </div>
+                <StreakHeatmap levelByDay={levelByDay} current={streak} longest={longestStreak} total={totalDone}/>
+              </div>
+            </div>
+          )}
 
           {/* Streak reminder */}
           {streak>0 && streakAtRisk ? (
@@ -6704,6 +7134,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
             <h2 style={{fontSize:22,fontWeight:600,color:C.white,marginBottom:6}}>My Progress</h2>
             <div style={{fontSize:13,color:C.muted}}>{pbs.length} exercise{pbs.length!==1?'s':''} tracked</div>
           </div>
+          <ClientWeightCard clientId={client.id} measurements={measurements} addMeasurement={addMeasurement} units={client.units||'kg'}/>
           {topPBs.length>0 && (
             <div style={{marginBottom:20}}>
               <CLabel icon="trophy" color={C.gold}>Top Lifts</CLabel>
@@ -6721,45 +7152,11 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
         </>)}
 
         {/* ────── PROFILE ────── */}
-        {tab==='profile' && (<>
-          <div style={{marginBottom:18}}><h2 style={{fontSize:22,fontWeight:600,color:C.white}}>My Profile</h2></div>
-          <div style={{background:`linear-gradient(135deg, ${C.card} 0%, ${C.ink} 100%)`,border:`1px solid ${C.border}`,borderRadius:14,padding:'22px 20px',marginBottom:16}}>
-            <div style={{display:'flex',gap:14,alignItems:'center',marginBottom:client.goal?16:0}}>
-              <div style={{width:56,height:56,borderRadius:'50%',background:`linear-gradient(135deg,${C.c1},${C.c2})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:21,fontWeight:700,color:C.white,flexShrink:0,fontFamily:'Space Grotesk,sans-serif'}}>{client.name.split(' ').map(n=>n[0]).slice(0,2).join('').toUpperCase()}</div>
-              <div style={{minWidth:0}}>
-                <div style={{fontSize:18,fontWeight:700,color:C.white}}>{client.name}</div>
-                {client.email&&<div style={{fontSize:12,color:C.faint,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{client.email}</div>}
-              </div>
-            </div>
-            {client.goal && <div style={{borderTop:`1px solid ${C.border}`,paddingTop:14}}><div style={{fontSize:10,fontWeight:700,color:C.amber,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:5}}>My Goal</div><div style={{fontSize:13.5,color:C.white,fontStyle:'italic',lineHeight:1.45}}>"{client.goal}"</div></div>}
-          </div>
-
-          {/* Quick stats */}
-          <div style={{display:'flex',gap:8,marginBottom:18}}>
-            {[{v:totalDone,l:'Sessions',ic:'dumbbell'},{v:streak,l:'Streak',ic:'activity'},{v:pbs.length,l:'Tracked',ic:'trendingUp'}].map((x,i)=>(
-              <div key={i} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'14px 10px',textAlign:'center'}}>
-                <Icon name={x.ic} size={15} color={C.amber}/>
-                <div style={{fontSize:22,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:'5px 0 2px',lineHeight:1}}>{x.v}</div>
-                <div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em'}}>{x.l}</div>
-              </div>
-            ))}
-          </div>
-
-          {goals.filter(g=>g.status==='active').length>0 && (
-            <div>
-              <CLabel icon="check" color={C.c3}>Active Goals</CLabel>
-              {goals.filter(g=>g.status==='active').map(g=>(
-                <div key={g.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'13px 15px',marginBottom:6}}>
-                  <div style={{fontSize:13,fontWeight:600,color:C.white}}>{g.goal_title || g.title}</div>
-                  {g.goal_description&&<div style={{fontSize:11,color:C.muted,marginTop:3,lineHeight:1.4}}>{g.goal_description}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-        </>)}
+        {tab==='profile' && <ClientProfilePage client={client} updateClient={updateClient} totalDone={totalDone} streak={streak} tracked={pbs.length}/>}
 
         {tab==='chats' && (()=>{
           const myChats = (chats||[]).filter(c=>(c.member_ids||[]).includes(client.id)).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))
+          const startCoachChat = async () => { const dm = myChats.find(c=>c.type!=='group'); if(dm){ setChatOpenId(dm.id); setChatDraft(''); markChatRead&&markChatRead(dm.id); return } try{ const r = await addChat({type:'dm',name:client.name,member_ids:[client.id]}); if(r&&r.id) setChatOpenId(r.id) }catch(e){} }
           const open = myChats.find(c=>c.id===chatOpenId) || null
           if(open){
             const tmsgs = (chatMessages||[]).filter(m=>m.chat_id===open.id).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))
@@ -6794,8 +7191,8 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
             )
           }
           return (<>
-            <div style={{marginBottom:18}}><h2 style={{fontSize:22,fontWeight:600,color:C.white}}>Messages</h2></div>
-            {myChats.length===0 && <Card style={{textAlign:'center',padding:26}}><Icon name="message" size={26} color={C.faint}/><p style={{color:C.muted,fontSize:13,marginTop:10,lineHeight:1.5}}>No conversations yet.<br/>Your coach will start one with you.</p></Card>}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,marginBottom:18}}><h2 style={{fontSize:22,fontWeight:600,color:C.white}}>Messages</h2><Btn label="Message your coach" small onClick={startCoachChat}/></div>
+            {myChats.length===0 && <Card onClick={startCoachChat} style={{textAlign:'center',padding:26,cursor:'pointer'}}><Icon name="message" size={26} color={C.amber}/><p style={{color:C.muted,fontSize:13,marginTop:10,lineHeight:1.5}}>No conversations yet.<br/>Tap here to message your coach.</p></Card>}
             {myChats.map(c=>{
               const cm = (chatMessages||[]).filter(m=>m.chat_id===c.id).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))
               const last = cm.slice(-1)[0]
@@ -7242,7 +7639,7 @@ function MainApp({ session, onSignOut }) {
         messages={messages.filter(m=>m.client_id===previewClientId)}
         addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
         chats={chats.filter(c=>(c.member_ids||[]).includes(previewClientId))}
-        chatMessages={chatMessages} addChatMessage={addChatMessage}
+        chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement}
         chatUnread={(id)=>chatUnread(id,previewClientId)} markChatRead={(id)=>markChatRead(id,previewClientId)}
         updateSession={updateSession}
         onExit={()=>setPreviewClientId(null)}
@@ -7266,7 +7663,7 @@ function MainApp({ session, onSignOut }) {
       messages={messages.filter(m=>m.client_id===loggedInClient.id)}
       addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
       chats={chats.filter(c=>(c.member_ids||[]).includes(loggedInClient.id))}
-      chatMessages={chatMessages} addChatMessage={addChatMessage}
+      chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement}
       chatUnread={(id)=>chatUnread(id,loggedInClient.id)} markChatRead={(id)=>markChatRead(id,loggedInClient.id)}
       updateSession={updateSession}
       onExit={signOutClient}
