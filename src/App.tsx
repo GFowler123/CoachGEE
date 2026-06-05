@@ -4301,6 +4301,237 @@ const PROGRESS_PERIODS = [
   {id:'custom', label:'Custom', days:null},
 ]
 
+function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, av=0, focusEx, onFocusHandled, client, updateClient }){
+  const [tab, setTab] = useState('pbs')
+  const [search, setSearch] = useState('')
+  const [openEx, setOpenEx] = useState(null)
+  const [exFull, setExFull] = useState(false)
+  const [period, setPeriod] = useState('all')
+  const [metric, setMetric] = useState('e1rm')
+  const [editPins, setEditPins] = useState(false)
+  const [draftPins, setDraftPins] = useState([])
+  const pins = (client && Array.isArray(client.pinned_exercises)) ? client.pinned_exercises : []
+  const savePins = (arr)=>{ updateClient && client && updateClient(client.id, {pinned_exercises:arr}); setEditPins(false) }
+
+  const pbs = React.useMemo(()=>getClientPBs(clientId, sessions, allSessions, weeks, programs), [clientId, sessions, allSessions, weeks, programs, av])
+
+  useEffect(()=>{ if(focusEx){ setOpenEx(focusEx); setExFull(true); setTab('pbs'); onFocusHandled && onFocusHandled() } }, [focusEx])
+
+  const periodDays = (PROGRESS_PERIODS.find(p=>p.id===period)||{}).days
+  const inPeriod = (d)=> !periodDays ? true : (d && (Date.now()-d.getTime()) <= periodDays*86400000)
+
+  const recentPBs = React.useMemo(()=>{ const cutoff=Date.now()-90*86400000; const found=[]; (pbs||[]).forEach(pb=>{ let rm=0; (pb.history||[]).forEach(h=>{ if((h.e1rm||0)>rm){ if(rm>0 && h.date && h.date.getTime()>cutoff) found.push({name:pb.name,e1rm:h.e1rm,date:h.date}); rm=h.e1rm } }) }); return found.sort((a,b)=>b.date-a.date).slice(0,3) }, [pbs])
+  const standout = recentPBs.length ? Math.max(...recentPBs.map(p=>p.e1rm)) : 0
+
+  const pctOver = (pb)=>{ const h=(pb.history||[]).filter(x=>x.e1rm>0 && inPeriod(x.date)); if(h.length<2) return null; const a=h[0].e1rm, b=h[h.length-1].e1rm; if(!a) return null; return Math.round((b-a)/a*100) }
+
+  const q = search.trim().toLowerCase()
+  const listPBs = (pbs||[]).filter(p=>p.maxE1RM>0 && (!q || p.name.toLowerCase().includes(q)))
+
+  const Mag = ()=>(<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.faint} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="20.5" y1="20.5" x2="16.65" y2="16.65"/></svg>)
+  const Spark = ({vals, color})=>{ const v=(vals||[]).filter(x=>x>0); if(v.length<2) return <span style={{width:54,height:17,display:'inline-block',flexShrink:0}}/>; const mn=Math.min(...v),mx=Math.max(...v),r=(mx-mn)||1; const pts=v.map((y,i)=>`${2+i*(50/(v.length-1))},${15-((y-mn)/r)*13}`).join(' '); return <svg width="54" height="17" viewBox="0 0 54 17" style={{flexShrink:0}}><polyline points={pts} fill="none" stroke={color} strokeWidth="2"/></svg> }
+
+  if(openEx){
+    const pb = (pbs||[]).find(p=>p.name===openEx)
+    const hist = ((pb&&pb.history)||[]).filter(h=>h.e1rm>0 || h.volumeLoad>0)
+    const e1Hist = hist.filter(h=>h.e1rm>0)
+    const cur = e1Hist.length?e1Hist[e1Hist.length-1].e1rm:0
+    const prev = e1Hist.length>1?e1Hist[e1Hist.length-2].e1rm:0
+    const delta = Math.round((cur-prev)*10)/10
+    const status = !prev?{t:'New',c:C.c3}: delta>0?{t:'Progressing',c:C.green}: delta<0?{t:'Declining',c:C.red}:{t:'Holding',c:C.amber}
+    const last5 = e1Hist.slice(-5).map(h=>h.e1rm)
+    const back = ()=> exFull ? setExFull(false) : (setOpenEx(null), setMetric('e1rm'))
+    const Head = (
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:13}}>
+        <button onClick={back} style={{background:'none',border:'none',cursor:'pointer',padding:'0 4px 0 0',display:'flex',alignItems:'center'}}><span style={{fontSize:26,color:C.muted,lineHeight:1}}>&#8249;</span></button>
+        <span style={{flex:1,fontSize:17,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pb?pb.name:openEx}</span>
+      </div>
+    )
+
+    if(!exFull){
+      return (
+        <div style={{padding:'4px 0 0'}}>
+          {Head}
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'16px 15px',marginBottom:12}}>
+            <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',marginBottom:14}}>
+              <div>
+                <div style={{fontSize:11,color:C.muted,letterSpacing:'0.05em',marginBottom:3}}>CURRENT e1RM</div>
+                <div style={{fontSize:36,fontWeight:700,color:C.amber,lineHeight:1,fontFamily:'Space Grotesk,sans-serif'}}>{cur||'—'}<span style={{fontSize:14,color:C.faint}}>kg</span></div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                {prev>0&&<div style={{color:delta>=0?C.green:C.red,fontSize:13,fontWeight:600}}>{delta>=0?'+':''}{delta} vs last</div>}
+                <div style={{marginTop:5}}><span style={{fontSize:11,color:status.c,background:`${status.c}1A`,borderRadius:999,padding:'2px 9px',fontWeight:600}}>{status.t}</span></div>
+              </div>
+            </div>
+            {last5.length>=2 ? (()=>{ const v=last5,mn=Math.min(...v),mx=Math.max(...v),r=(mx-mn)||1; const xy=i=>[10+i*(280/(v.length-1)), 58-((v[i]-mn)/r)*46]; const pts=v.map((_,i)=>xy(i).join(',')).join(' '); return <svg width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none"><polyline points={pts} fill="none" stroke={C.c2} strokeWidth="2.5"/>{v.map((_,i)=>{const [cx,cy]=xy(i);return <circle key={i} cx={cx} cy={cy} r={i===v.length-1?4.5:3} fill={i===v.length-1?C.gold:C.c2}/>})}</svg> })() : <div style={{fontSize:12,color:C.faint,textAlign:'center',padding:'10px 0'}}>Not enough data yet</div>}
+            <div style={{fontSize:10,color:C.faint,textAlign:'center',marginTop:5}}>Last {last5.length} exposures</div>
+          </div>
+          <button onClick={()=>setExFull(true)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:7,background:'transparent',border:`1px solid ${C.amber}55`,color:C.amber,borderRadius:11,padding:13,fontSize:13,fontWeight:600,cursor:'pointer'}}>Full history &amp; stats &#8594;</button>
+        </div>
+      )
+    }
+
+    const allTime = pb?Math.round(pb.maxE1RM):0
+    const bestSet = hist.reduce((m,h)=> (h.bestLoad||0)>(m.load||0)?{load:h.bestLoad,reps:h.bestReps}:m, {load:0,reps:0})
+    const mk = metric==='e1rm'?{key:'e1rm',lab:'kg',col:C.c2,name:'e1RM'}: metric==='load'?{key:'bestLoad',lab:'kg',col:C.amber,name:'Load'}:{key:'volumeLoad',lab:'',col:C.purple,name:'Volume'}
+    const chartData = hist.filter(h=>inPeriod(h.date) && (h[mk.key]||0)>0).map(h=>({x:h.dateStr, [mk.key]:Math.round((h[mk.key])*10)/10}))
+    const expos = [...hist].reverse()
+    return (
+      <div style={{padding:'4px 0 0'}}>
+        {Head}
+        <div style={{display:'flex',gap:6,marginBottom:10}}>
+          {[['e1rm','e1RM'],['load','Load'],['volume','Volume']].map(([m,l])=>(
+            <button key={m} onClick={()=>setMetric(m)} style={{flex:1,fontSize:11.5,fontWeight:700,padding:'7px 0',borderRadius:9,border:`1px solid ${metric===m?C.amber:C.border}`,background:metric===m?C.amber:'transparent',color:metric===m?C.bg:C.muted,cursor:'pointer'}}>{l}</button>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:5,marginBottom:11,flexWrap:'wrap'}}>
+          {PROGRESS_PERIODS.filter(p=>p.id!=='custom').map(p=>(
+            <button key={p.id} onClick={()=>setPeriod(p.id)} style={{fontSize:10.5,fontWeight:700,padding:'4px 10px',borderRadius:999,border:'none',background:period===p.id?C.amber:C.lift,color:period===p.id?C.bg:C.muted,cursor:'pointer'}}>{p.label}</button>
+          ))}
+        </div>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'12px 10px 6px',marginBottom:10}}>
+          <div style={{fontSize:11,color:C.muted,marginBottom:2,paddingLeft:4}}>{mk.name} over time</div>
+          <SvgLineChart data={chartData} xKey="x" yKey={mk.key} color={mk.col} height={170} label={mk.lab}/>
+        </div>
+        <div style={{display:'flex',gap:7,marginBottom:14}}>
+          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>All-time</div><div style={{fontSize:16,fontWeight:700,color:C.gold,fontFamily:'Space Grotesk,sans-serif'}}>{allTime||'—'}</div></div>
+          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>Best set</div><div style={{fontSize:16,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{bestSet.load?`${bestSet.load}${bestSet.reps?'×'+bestSet.reps:''}`:'—'}</div></div>
+          <div style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'11px 6px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:3}}>Exposures</div><div style={{fontSize:16,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{hist.length}</div></div>
+        </div>
+        <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>All exposures · {hist.length}</div>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,overflow:'hidden'}}>
+          {expos.map((h,i)=>{ const nextE = expos[i+1]?expos[i+1].e1rm:null; const dir = nextE!=null ? (h.e1rm>nextE?'up':h.e1rm<nextE?'down':'flat') : null; return (
+            <div key={i} style={{display:'flex',alignItems:'center',padding:'9px 12px',borderBottom:i<expos.length-1?`1px solid ${C.ink}`:'none'}}>
+              <span style={{flex:1,fontSize:12,color:C.muted}}>{h.dateStr}</span>
+              <span style={{fontSize:13,fontWeight:600,color:C.white,marginRight:10}}>{h.bestLoad?`${h.bestLoad}${h.bestReps?' × '+h.bestReps:''}`:'—'}</span>
+              <span style={{fontSize:13,fontWeight:700,color:i===0?C.gold:C.white,fontFamily:'Space Grotesk,sans-serif',minWidth:30,textAlign:'right'}}>{h.e1rm||'—'}</span>
+              <span style={{width:18,display:'flex',justifyContent:'center',marginLeft:5}}>{dir==='up'?<Icon name="trendingUp" size={14} color={C.green}/>:dir==='down'?<Icon name="trendingDown" size={14} color={C.red}/>:null}</span>
+            </div>
+          )})}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{padding:'4px 0 0'}}>
+      {recentPBs.length>0 && (
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>Recent PBs</div>
+          <div style={{display:'flex',gap:8}}>
+            {recentPBs.map((p,i)=>{ const gold=p.e1rm===standout; return (
+              <div key={i} onClick={()=>{setOpenEx(p.name);setExFull(false)}} style={{flex:1,minWidth:0,background:C.card,border:`1px solid ${gold?`${C.gold}55`:C.border}`,borderRadius:12,padding:'10px 9px',cursor:'pointer'}}>
+                <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:6}}>{gold&&<Icon name="trophy" size={12} color={C.gold}/>}<span style={{fontSize:11,color:gold?C.gold:C.green,fontWeight:600}}>NEW</span></div>
+                <div style={{fontSize:11,color:C.muted,lineHeight:1.25,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div>
+                <div style={{fontSize:18,fontWeight:700,color:gold?C.gold:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{p.e1rm}<span style={{fontSize:10,color:C.faint}}>kg</span></div>
+              </div>
+            )})}
+          </div>
+        </div>
+      )}
+
+      <div style={{marginBottom:18}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+          <span style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>Your focus</span>
+          <button onClick={()=>{setDraftPins(pins);setEditPins(v=>!v)}} style={{background:'none',border:'none',cursor:'pointer',color:C.c3,fontSize:11,fontWeight:600}}>{editPins?'Done':'Edit pins'}</button>
+        </div>
+        {editPins ? (
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'12px 13px'}}>
+            <div style={{fontSize:11,color:C.muted,marginBottom:9}}>Pick up to 3 to track ({draftPins.length}/3)</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:240,overflowY:'auto'}}>
+              {(pbs||[]).filter(p=>p.maxE1RM>0).map((p,i)=>{ const on=draftPins.includes(p.name); const full=draftPins.length>=3&&!on; return (
+                <button key={i} disabled={full} onClick={()=>setDraftPins(on?draftPins.filter(x=>x!==p.name):[...draftPins,p.name])} style={{display:'flex',alignItems:'center',gap:9,background:on?`${C.amber}14`:C.ink,border:`1px solid ${on?C.amber:C.border}`,borderRadius:9,padding:'9px 11px',cursor:full?'not-allowed':'pointer',opacity:full?0.4:1,textAlign:'left'}}>
+                  <span style={{width:18,height:18,borderRadius:5,border:`1.5px solid ${on?C.amber:C.faint}`,background:on?C.amber:'transparent',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center'}}>{on&&<Icon name="check" size={12} color={C.bg}/>}</span>
+                  <span style={{flex:1,fontSize:13,color:C.white,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
+                </button>
+              )})}
+            </div>
+            <button onClick={()=>savePins(draftPins)} style={{width:'100%',marginTop:11,background:C.amber,color:C.bg,border:'none',borderRadius:10,padding:11,fontWeight:700,fontSize:13,cursor:'pointer'}}>Save pins</button>
+          </div>
+        ) : pins.length===0 ? (
+          <div onClick={()=>{setDraftPins(pins);setEditPins(true)}} style={{background:C.card,border:`1px dashed ${C.border}`,borderRadius:12,padding:'16px 14px',textAlign:'center',cursor:'pointer',color:C.muted,fontSize:13}}>Tap &ldquo;Edit pins&rdquo; to track up to 3 lifts here</div>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {pins.map((nm,i)=>{ const pb=(pbs||[]).find(p=>p.name===nm); const eh=((pb&&pb.history)||[]).filter(h=>h.e1rm>0); const cur=eh.length?eh[eh.length-1].e1rm:0; const all=pb?Math.round(pb.maxE1RM):0; const last5=eh.slice(-5).map(h=>h.e1rm); const atBest=cur>0&&all>0&&cur>=all; return (
+              <div key={i} onClick={()=>{setOpenEx(nm);setExFull(false)}} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'11px 13px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:600,color:C.white,marginBottom:7,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nm}</div>
+                  <Spark vals={last5} color={atBest?C.gold:C.c2}/>
+                  <div style={{fontSize:11,color:C.faint,marginTop:5}}>All-time {all||'\u2014'}kg</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontSize:11,color:C.faint,marginBottom:2}}>e1RM</div>
+                  <div style={{fontSize:23,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif'}}>{cur||'\u2014'}</div>
+                </div>
+                <span style={{fontSize:18,color:C.lift,lineHeight:1,flexShrink:0}}>&#8250;</span>
+              </div>
+            )})}
+          </div>
+        )}
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:8,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'9px 11px',marginBottom:12}}>
+        <Mag/>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search exercise…" style={{flex:1,background:'none',border:'none',outline:'none',color:C.white,fontSize:14,minWidth:0}}/>
+        {search&&<button onClick={()=>setSearch('')} style={{background:'none',border:'none',cursor:'pointer',padding:0,color:C.faint,fontSize:18,lineHeight:1}}>&times;</button>}
+      </div>
+
+      <div style={{display:'flex',gap:4,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:4,marginBottom:12}}>
+        {[['pbs','PBs'],['trends','Trends'],['hist','History']].map(([t,l])=>(
+          <button key={t} onClick={()=>setTab(t)} style={{flex:1,border:'none',background:tab===t?C.amber:'transparent',color:tab===t?C.bg:C.muted,fontSize:12,fontWeight:700,padding:'7px 0',borderRadius:8,cursor:'pointer'}}>{l}</button>
+        ))}
+      </div>
+
+      {tab==='pbs' && (
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+          {listPBs.length===0 && <p style={{color:C.faint,fontSize:13,padding:'10px 4px'}}>No PBs logged yet.</p>}
+          {listPBs.map((p,i)=>{ const isRecent=recentPBs.some(r=>r.name===p.name); return (
+            <div key={i} onClick={()=>{setOpenEx(p.name);setExFull(false)}} style={{display:'flex',alignItems:'center',gap:9,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'10px 12px',cursor:'pointer'}}>
+              <span style={{flex:1,fontSize:13,fontWeight:600,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
+              {isRecent&&<span style={{fontSize:11,color:C.gold,fontWeight:600}}>PB</span>}
+              <span style={{fontSize:15,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif'}}>{Math.round(p.maxE1RM)}<span style={{fontSize:10,color:C.faint}}>kg</span></span>
+              <span style={{fontSize:18,color:C.lift,lineHeight:1,flexShrink:0}}>&#8250;</span>
+            </div>
+          )})}
+        </div>
+      )}
+
+      {tab==='trends' && (
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+          <div style={{display:'flex',gap:5,marginBottom:3,flexWrap:'wrap'}}>
+            {PROGRESS_PERIODS.filter(p=>p.id!=='custom'&&p.id!=='60d').map(p=>(
+              <button key={p.id} onClick={()=>setPeriod(p.id)} style={{fontSize:10.5,fontWeight:700,padding:'4px 10px',borderRadius:999,border:'none',background:period===p.id?C.amber:C.lift,color:period===p.id?C.bg:C.muted,cursor:'pointer'}}>{p.label}</button>
+            ))}
+          </div>
+          {listPBs.length===0 && <p style={{color:C.faint,fontSize:13,padding:'10px 4px'}}>No data yet.</p>}
+          {listPBs.map((p,i)=>{ const pct=pctOver(p); const last5=(p.history||[]).filter(h=>h.e1rm>0).slice(-5).map(h=>h.e1rm); const col=pct==null?C.muted:pct>0?C.green:pct<0?C.red:C.muted; return (
+            <div key={i} onClick={()=>{setOpenEx(p.name);setExFull(false)}} style={{display:'flex',alignItems:'center',gap:9,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'10px 12px',cursor:'pointer'}}>
+              <span style={{flex:1,fontSize:13,fontWeight:600,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
+              <Spark vals={last5} color={pct>0?C.green:pct<0?C.red:C.c2}/>
+              <span style={{fontSize:12,fontWeight:600,color:col,minWidth:40,textAlign:'right'}}>{pct==null?'—':(pct>0?'+':'')+pct+'%'}</span>
+              <span style={{fontSize:18,color:C.lift,lineHeight:1,flexShrink:0}}>&#8250;</span>
+            </div>
+          )})}
+        </div>
+      )}
+
+      {tab==='hist' && (()=>{
+        const cs=(sessions||[]).filter(s=>s.client_id===clientId)
+        const dated=cs.map(s=>({s,d:getSessionDate(s,allSessions,weeks,programs)})).filter(x=>x.d).sort((a,b)=>b.d-a.d)
+        const fil=dated.filter(x=> !q || (x.s.name||'').toLowerCase().includes(q) || safeExercises(x.s).some(e=>(e.name||'').toLowerCase().includes(q)))
+        if(!fil.length) return <p style={{color:C.faint,fontSize:13,padding:'10px 4px'}}>No sessions yet.</p>
+        return (<div style={{display:'flex',flexDirection:'column',gap:7}}>
+          {fil.slice(0,40).map((x,i)=>{ const setN=safeExercises(x.s).reduce((a,e)=>a+(e.loggedSets||[]).filter(setIsDone).length,0); const hadPB=getSessionPBs(x.s.id,pbs).length>0; return (
+            <div key={i} style={{display:'flex',alignItems:'center',gap:10,background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'10px 12px'}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{x.s.name}</div><div style={{fontSize:11,color:C.muted}}>{x.d.toLocaleDateString('en-AU',{day:'numeric',month:'short'})} · {setN} sets</div></div>
+              {hadPB&&<span style={{fontSize:11,color:C.gold,fontWeight:600}}>PB</span>}
+            </div>
+          )})}
+        </div>)
+      })()}
+    </div>
+  )
+}
+
 function ProgressTab({clientId,sessions,allSessions,weeks,programs,av=0,updateSession,focusEx,onFocusHandled}){  // av = analyticsVersion; changes trigger full recompute
   const _allSess = allSessions||sessions  // allSessions for date calc; fallback to sessions if not provided
   const allPBs = getClientPBs(clientId,sessions,_allSess,weeks,programs)
@@ -5958,7 +6189,20 @@ function CLabel({ children, color=C.amber, icon }) {
   )
 }
 
-function ClientSessionSummary({ sess, programName, status, onResume }){
+function getSessionPBs(sessId, pbs){
+  const out=[]
+  ;(pbs||[]).forEach(pb=>{
+    const hist=pb.history||[]
+    const idx=hist.findIndex(h=>h.sessId===sessId)
+    if(idx<0) return
+    const cur=hist[idx]; if(!(cur && cur.e1rm>0)) return
+    let prevMax=0
+    for(let i=0;i<idx;i++){ if((hist[i].e1rm||0)>prevMax) prevMax=hist[i].e1rm }
+    if(cur.e1rm>prevMax && prevMax>0) out.push({name:pb.name, e1rm:cur.e1rm, prev:Math.round(prevMax*10)/10})
+  })
+  return out
+}
+function ClientSessionSummary({ sess, programName, status, onResume, pbHits }){
   const exs = safeExercises(sess)
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
@@ -5974,6 +6218,22 @@ function ClientSessionSummary({ sess, programName, status, onResume }){
           <span style={{display:'flex',alignItems:'center',gap:5,background:`${meta.color}1A`,color:meta.color,fontSize:11,fontWeight:700,padding:'4px 10px',borderRadius:999}}><Icon name={meta.icon} size={12} color={meta.color}/>{meta.label}</span>
         </div>
       </div>
+      {pbHits && pbHits.length>0 && (
+        <div style={{background:`${C.gold}12`,border:`1px solid ${C.gold}55`,borderRadius:12,padding:'13px 15px',marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:8}}>
+            <Icon name="trophy" size={16} color={C.gold}/>
+            <span style={{fontSize:13,fontWeight:700,color:C.gold,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.03em'}}>{`NEW PB${pbHits.length>1?'S':''} — CONGRATS!`}</span>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:7}}>
+            {pbHits.map((p,i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                <span style={{fontSize:13,color:C.white,fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
+                <span style={{fontSize:12,color:C.muted,flexShrink:0,whiteSpace:'nowrap'}}><span style={{color:C.gold,fontWeight:700,fontFamily:'Space Grotesk,sans-serif'}}>{p.e1rm}kg</span> e1RM <span style={{color:C.faint}}>· up from {p.prev}kg</span></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <button onClick={onResume} style={{width:'100%',background:C.amber,color:C.bg,border:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:15,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em',marginBottom:18}}>
         <Icon name="play" size={15} color={C.bg} fill={C.bg}/>{btnLabel}
       </button>
@@ -6003,7 +6263,7 @@ function ClientSessionSummary({ sess, programName, status, onResume }){
     </div>
   )
 }
-function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
+function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
@@ -6046,10 +6306,11 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
     const dEnd = new Date(d); dEnd.setDate(d.getDate()+1)
     const daySess = datedSessions.filter(x=>x.date>=d && x.date<dEnd)
     const done = daySess.some(x=>sessDone(x.sess))
-    const skipped = !done && daySess.some(x=>sessSkipped(x.sess))
+    const inProgress = !done && daySess.some(x=>computeSessionStatus(x.sess)==='in_progress')
+    const skipped = !done && !inProgress && daySess.some(x=>sessSkipped(x.sess))
     return { date:d, label:['M','T','W','T','F','S','S'][i], num:d.getDate(),
-      hasSession:daySess.length>0, done, skipped, sessId: daySess[0]?daySess[0].sess.id:null,
-      missed: !done && !skipped && d<todayStart && daySess.some(x=>!sessSkipped(x.sess)),
+      hasSession:daySess.length>0, done, inProgress, skipped, sessId: daySess[0]?daySess[0].sess.id:null,
+      missed: !done && !inProgress && !skipped && d<todayStart && daySess.some(x=>!sessSkipped(x.sess)),
       isToday:d.getTime()===todayStart.getTime(), isPast:d<todayStart }
   })
   const weeklyScheduled = datedSessions.filter(x=>x.date>=weekStart && x.date<weekEnd).length
@@ -6112,7 +6373,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
               const _exs=safeExercises(sess)
               const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
               const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
-              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} onResume={()=>setSessionFull(true)}/>
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
@@ -6194,10 +6455,11 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
             </div>
             <div style={{display:'flex',gap:5,justifyContent:'space-between'}}>
               {weekDays.map((d,i)=>{
-                const bg = d.done ? C.amber : d.isToday ? `${C.amber}1A` : 'transparent'
-                const bd = d.isToday ? C.amber : d.missed ? `${C.red}55` : d.hasSession ? C.lift : C.border
-                const numCol = d.done ? C.bg : d.isToday ? C.amber : d.skipped ? C.faint : d.hasSession ? C.white : C.faint
-                const dot = d.done ? null : d.missed ? C.red : d.skipped ? C.muted : (d.hasSession && !d.isPast) ? C.c2 : null
+                const statusCol = d.done ? C.green : d.inProgress ? C.orange : d.missed ? C.red : null
+                const bg = statusCol || (d.isToday ? `${C.amber}1A` : 'transparent')
+                const bd = statusCol || (d.isToday ? C.amber : d.hasSession ? C.lift : C.border)
+                const numCol = statusCol ? C.bg : d.isToday ? C.amber : d.skipped ? C.faint : d.hasSession ? C.white : C.faint
+                const dot = statusCol ? null : d.skipped ? C.muted : (d.hasSession && !d.isPast) ? C.c2 : null
                 return (
                   <div key={i} onClick={()=>{ if(d.sessId) openSess(d.sessId,false) }} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:d.hasSession?'pointer':'default'}}>
                     <span style={{fontSize:10,fontWeight:700,color:d.isToday?C.amber:C.faint,letterSpacing:'0.04em'}}>{d.label}</span>
@@ -6412,7 +6674,7 @@ function ClientPreviewApp({ client, sessions, allSessions, programs, weeks, goal
               </div>
             </div>
           )}
-          <ProgressTab clientId={client.id} sessions={sessions} allSessions={allSessions} weeks={weeks} programs={programs} av={av} updateSession={updateSession} focusEx={progressEx} onFocusHandled={()=>setProgressEx(null)}/>
+          <ClientProgressTab clientId={client.id} client={client} updateClient={updateClient} sessions={sessions} allSessions={allSessions} weeks={weeks} programs={programs} av={av} focusEx={progressEx} onFocusHandled={()=>setProgressEx(null)}/>
         </>)}
 
         {/* ────── PROFILE ────── */}
@@ -6927,6 +7189,7 @@ function MainApp({ session, onSignOut }) {
     if(previewClient) {
       return <ClientPreviewApp
         client={previewClient}
+        updateClient={updateClient}
         sessions={sessions.filter(s=>s.client_id===previewClientId)}
         allSessions={sessions}
         programs={programs.filter(p=>p.client_id===previewClientId)}
@@ -6950,6 +7213,7 @@ function MainApp({ session, onSignOut }) {
     const signOutClient = async()=>{ try{await sb.signOut(token)}catch(e){} localStorage.removeItem('cgee_session'); onSignOut() }
     return <ClientPreviewApp
       client={loggedInClient}
+      updateClient={updateClient}
       sessions={sessions.filter(s=>s.client_id===loggedInClient.id)}
       allSessions={sessions}
       programs={programs.filter(p=>p.client_id===loggedInClient.id)}
