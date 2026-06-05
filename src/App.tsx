@@ -4310,8 +4310,10 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
   const [metric, setMetric] = useState('e1rm')
   const [editPins, setEditPins] = useState(false)
   const [draftPins, setDraftPins] = useState([])
+  const [editFeatured, setEditFeatured] = useState(false)
   const pins = (client && Array.isArray(client.pinned_exercises)) ? client.pinned_exercises : []
   const savePins = (arr)=>{ updateClient && client && updateClient(client.id, {pinned_exercises:arr}); setEditPins(false) }
+  const saveFeatured = (nm)=>{ updateClient && client && updateClient(client.id, {featured_exercise:nm}); setEditFeatured(false) }
 
   const pbs = React.useMemo(()=>getClientPBs(clientId, sessions, allSessions, weeks, programs), [clientId, sessions, allSessions, weeks, programs, av])
 
@@ -4327,6 +4329,20 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
 
   const q = search.trim().toLowerCase()
   const listPBs = (pbs||[]).filter(p=>p.maxE1RM>0 && (!q || p.name.toLowerCase().includes(q)))
+  const autoPins = React.useMemo(()=>{
+    const myProgs=(programs||[]).filter(p=>p.client_id===clientId)
+    if(!myProgs.length) return []
+    const prog=[...myProgs].sort((a,b)=> new Date(b.start_date||0)-new Date(a.start_date||0))[0]
+    const psess=(sessions||[]).filter(x=>x.program_id===prog.id).map(x=>({s:x,d:getSessionDate(x,allSessions,weeks,programs)}))
+    psess.sort((a,b)=>{ const da=a.d?a.d.getTime():0,db=b.d?b.d.getTime():0; if(da!==db) return da-db; return (a.s.sort_order||0)-(b.s.sort_order||0) })
+    const names=[]
+    psess.slice(0,3).forEach(x=>{ const exs=safeExercises(x.s).filter(e=>!e.isWarmup); const a1=exs.find(e=>String(e.blockLabel||'').toUpperCase()==='A1')||exs[0]; if(a1){ const nm=resolveExName(a1.name||''); if(nm && !names.includes(nm)) names.push(nm) } })
+    return names.slice(0,3)
+  }, [clientId, programs, sessions, allSessions, weeks])
+  const bestLift = (pbs||[]).filter(p=>p.maxE1RM>0).sort((a,b)=>b.maxE1RM-a.maxE1RM)[0]
+  const featuredName = (client && client.featured_exercise) || (bestLift?bestLift.name:null)
+  const featuredPb = featuredName ? (pbs||[]).find(p=>p.name===featuredName) : null
+  const effectivePins = (pins.length?pins:autoPins).filter(n=>n!==featuredName).slice(0,3)
 
   const Mag = ()=>(<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.faint} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="20.5" y1="20.5" x2="16.65" y2="16.65"/></svg>)
   const Spark = ({vals, color})=>{ const v=(vals||[]).filter(x=>x>0); if(v.length<2) return <span style={{width:54,height:17,display:'inline-block',flexShrink:0}}/>; const mn=Math.min(...v),mx=Math.max(...v),r=(mx-mn)||1; const pts=v.map((y,i)=>`${2+i*(50/(v.length-1))},${15-((y-mn)/r)*13}`).join(' '); return <svg width="54" height="17" viewBox="0 0 54 17" style={{flexShrink:0}}><polyline points={pts} fill="none" stroke={color} strokeWidth="2"/></svg> }
@@ -4431,9 +4447,36 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
       )}
 
       <div style={{marginBottom:18}}>
+        <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>Your focus</div>
+
+        {featuredPb && (()=>{ const eh=(featuredPb.history||[]).filter(h=>h.e1rm>0); const cur=eh.length?eh[eh.length-1].e1rm:0; const cdata=eh.map(h=>({x:h.dateStr,e1rm:Math.round(h.e1rm*10)/10})); return (
+          <div style={{background:C.card,border:`1px solid ${C.gold}33`,borderRadius:14,padding:'13px 14px',marginBottom:12}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:editFeatured?10:6}}>
+              <span style={{fontSize:10,fontWeight:700,color:C.gold,textTransform:'uppercase',letterSpacing:'0.08em',display:'flex',alignItems:'center',gap:5}}><Icon name="trophy" size={12} color={C.gold}/>Best lift</span>
+              <button onClick={()=>setEditFeatured(v=>!v)} style={{background:'none',border:'none',cursor:'pointer',color:C.c3,fontSize:11,fontWeight:600}}>{editFeatured?'Cancel':'Change'}</button>
+            </div>
+            {editFeatured ? (
+              <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:240,overflowY:'auto'}}>
+                {(pbs||[]).filter(p=>p.maxE1RM>0).map((p,i)=>{ const on=p.name===featuredName; return (
+                  <button key={i} onClick={()=>saveFeatured(p.name)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:9,background:on?`${C.amber}14`:C.ink,border:`1px solid ${on?C.amber:C.border}`,borderRadius:9,padding:'9px 11px',cursor:'pointer',textAlign:'left'}}>
+                    <span style={{flex:1,fontSize:13,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif'}}>{Math.round(p.maxE1RM)}</span>
+                  </button>
+                )})}
+              </div>
+            ) : (<>
+              <div onClick={()=>{setOpenEx(featuredName);setExFull(false)}} style={{cursor:'pointer',display:'flex',alignItems:'flex-end',justifyContent:'space-between',marginBottom:6}}>
+                <span style={{fontSize:15,fontWeight:600,color:C.white,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{featuredPb.name}</span>
+                <span style={{fontSize:24,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',marginLeft:10}}>{cur||'—'}<span style={{fontSize:11,color:C.faint}}>kg</span></span>
+              </div>
+              {cdata.length>=2 ? <SvgLineChart data={cdata} xKey="x" yKey="e1rm" color={C.c2} height={130} label="kg"/> : <div style={{fontSize:12,color:C.faint,padding:'14px 0',textAlign:'center'}}>Not enough data yet</div>}
+            </>)}
+          </div>
+        )})()}
+
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-          <span style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>Your focus</span>
-          <button onClick={()=>{setDraftPins(pins);setEditPins(v=>!v)}} style={{background:'none',border:'none',cursor:'pointer',color:C.c3,fontSize:11,fontWeight:600}}>{editPins?'Done':'Edit pins'}</button>
+          <span style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>Tracking</span>
+          <button onClick={()=>{setDraftPins(effectivePins);setEditPins(v=>!v)}} style={{background:'none',border:'none',cursor:'pointer',color:C.c3,fontSize:11,fontWeight:600}}>{editPins?'Done':'Edit pins'}</button>
         </div>
         {editPins ? (
           <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'12px 13px'}}>
@@ -4448,22 +4491,22 @@ function ClientProgressTab({ clientId, sessions, allSessions, weeks, programs, a
             </div>
             <button onClick={()=>savePins(draftPins)} style={{width:'100%',marginTop:11,background:C.amber,color:C.bg,border:'none',borderRadius:10,padding:11,fontWeight:700,fontSize:13,cursor:'pointer'}}>Save pins</button>
           </div>
-        ) : pins.length===0 ? (
-          <div onClick={()=>{setDraftPins(pins);setEditPins(true)}} style={{background:C.card,border:`1px dashed ${C.border}`,borderRadius:12,padding:'16px 14px',textAlign:'center',cursor:'pointer',color:C.muted,fontSize:13}}>Tap &ldquo;Edit pins&rdquo; to track up to 3 lifts here</div>
+        ) : effectivePins.length===0 ? (
+          <div onClick={()=>{setDraftPins(effectivePins);setEditPins(true)}} style={{background:C.card,border:`1px dashed ${C.border}`,borderRadius:12,padding:'16px 14px',textAlign:'center',cursor:'pointer',color:C.muted,fontSize:13}}>Tap “Edit pins” to track up to 3 lifts here</div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {pins.map((nm,i)=>{ const pb=(pbs||[]).find(p=>p.name===nm); const eh=((pb&&pb.history)||[]).filter(h=>h.e1rm>0); const cur=eh.length?eh[eh.length-1].e1rm:0; const all=pb?Math.round(pb.maxE1RM):0; const last5=eh.slice(-5).map(h=>h.e1rm); const atBest=cur>0&&all>0&&cur>=all; return (
+            {effectivePins.map((nm,i)=>{ const pb=(pbs||[]).find(p=>p.name===nm); const eh=((pb&&pb.history)||[]).filter(h=>h.e1rm>0); const cur=eh.length?eh[eh.length-1].e1rm:0; const all=pb?Math.round(pb.maxE1RM):0; const last5=eh.slice(-5).map(h=>h.e1rm); const atBest=cur>0&&all>0&&cur>=all; return (
               <div key={i} onClick={()=>{setOpenEx(nm);setExFull(false)}} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'11px 13px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,color:C.white,marginBottom:7,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nm}</div>
                   <Spark vals={last5} color={atBest?C.gold:C.c2}/>
-                  <div style={{fontSize:11,color:C.faint,marginTop:5}}>All-time {all||'\u2014'}kg</div>
+                  <div style={{fontSize:11,color:C.faint,marginTop:5}}>All-time {all||'—'}kg</div>
                 </div>
                 <div style={{textAlign:'right'}}>
                   <div style={{fontSize:11,color:C.faint,marginBottom:2}}>e1RM</div>
-                  <div style={{fontSize:23,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif'}}>{cur||'\u2014'}</div>
+                  <div style={{fontSize:23,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif'}}>{cur||'—'}</div>
                 </div>
-                <span style={{fontSize:18,color:C.lift,lineHeight:1,flexShrink:0}}>&#8250;</span>
+                <span style={{fontSize:18,color:C.lift,lineHeight:1,flexShrink:0}}>›</span>
               </div>
             )})}
           </div>
