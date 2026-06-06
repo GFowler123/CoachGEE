@@ -1660,7 +1660,7 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
 }
 
 // ─── PROGRAM DETAIL ───────────────────────────────────────────────────────────
-function ProgramDetail({ programId, clientId, clients, programs, updateProgram, weeks, addWeek, deleteWeek, sessions, addSession, updateSession, deleteSession, saving, go }) {
+function ProgramDetail({ programId, clientId, clients, programs, updateProgram, weeks, addWeek, deleteWeek, sessions, addSession, updateSession, deleteSession, saving, go, addTemplate }) {
   const prog       = programs.find(p=>p.id===programId)
   const client     = clients.find(c=>c.id===clientId)
   const progWeeks  = [...weeks.filter(w=>w.program_id===programId)].sort((a,b)=>a.week_number-b.week_number)
@@ -1668,6 +1668,7 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
   const [pF, setPF] = useState({})
   const [addingWeek, setAddingWeek] = useState(false)
   const [wF, setWF] = useState({week_number:'',phase:'',notes:''})
+  const [progressFor, setProgressFor] = useState(null)
   const [addingSessFor, setAddingSessFor] = useState(null)
   const [sF, setSF] = useState({name:'',session_type:'Strength',date_label:'',notes:''})
   const [collapsed, setCollapsed] = useState({})
@@ -1704,6 +1705,43 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
         await addSession({...rest,week_id:wk.id,program_id:programId,client_id:clientId,status:'pending',exercises:rest.exercises||[]})
       }
     }
+  }
+
+  const bumpLoadStr = (val, bump) => {
+    if(val==null||val==='') return val
+    return String(val).replace(/\d+(\.\d+)?/g, num=>{ let n=parseFloat(num); n = bump.type==='pct' ? n*(1+bump.val/100) : n+bump.val; n=Math.round(n*10)/10; return String(n) })
+  }
+  const nextWeekNum = () => Math.max(0,...progWeeks.map(w=>w.week_number||0))+1
+  const cloneSessForWeek = async (srcWeekId, targetWeekId, bump) => {
+    const src = sessions.filter(s=>s.week_id===srcWeekId).map(s=>({...s,exercises:safeExercises(s)}))
+    for(const sess of src){
+      const {id:_a,week_id:_b,completed_at:_c,status:_d,...rest} = sess
+      const exercises = (rest.exercises||[]).map(e=>{
+        const ne={...e,loggedSets:[],force_complete:false}
+        if(bump && !e.isWarmup){
+          if(ne.load!=null&&ne.load!=='') ne.load=bumpLoadStr(ne.load,bump)
+          if(Array.isArray(ne.targets)) ne.targets=ne.targets.map(t=>(t&&t.load!=null&&t.load!=='')?{...t,load:bumpLoadStr(t.load,bump)}:t)
+        }
+        return ne
+      })
+      await addSession({...rest,week_id:targetWeekId,program_id:programId,client_id:clientId,status:'pending',exercises})
+    }
+  }
+  const dupWeek = async (wk) => {
+    const n=nextWeekNum()
+    const w=await addWeek({program_id:programId,week_number:n,phase:wk.phase||'',notes:wk.notes||'',sort_order:n})
+    if(w&&w.id){ await cloneSessForWeek(wk.id,w.id,null); setActiveWeekId(w.id) }
+  }
+  const progressWeek = async (wk, bump) => {
+    setProgressFor(null)
+    const n=nextWeekNum()
+    const w=await addWeek({program_id:programId,week_number:n,phase:wk.phase||'',notes:wk.notes||'',sort_order:n})
+    if(w&&w.id){ await cloneSessForWeek(wk.id,w.id,bump); setActiveWeekId(w.id) }
+  }
+  const dupSession = async (sess) => {
+    const {id:_a,completed_at:_b,status:_c,...rest} = sess
+    const exercises=(safeExercises(sess)||[]).map(e=>({...e,loggedSets:[],force_complete:false}))
+    await addSession({...rest,week_id:sess.week_id,program_id:programId,client_id:clientId,status:'pending',name:(sess.name||'Session')+' (copy)',exercises})
   }
 
   // Auto-complete logic
@@ -1783,10 +1821,6 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
             <Btn label={prog.status==='current'?'Mark Complete':'Mark Current'} variant="secondary" small onClick={()=>updateProgram(programId,{status:prog.status==='current'?'complete':'current',auto_completed:false})}/>
             <Btn label="Edit" variant="secondary" small onClick={()=>{setEditProg(true);setPF({name:prog.name,goal:prog.goal||'',phase:prog.phase||'',status:prog.status,notes:prog.notes||'',start_date:prog.start_date||''})}}/>
             <Btn label="⊡ Save Template" variant="secondary" small onClick={()=>{
-              const { templates: ts, addTemplate } = (() => {
-                try{ return {templates:JSON.parse(localStorage.getItem('cgee_templates')||'[]'), addTemplate:(t)=>{const next=[...JSON.parse(localStorage.getItem('cgee_templates')||'[]'),{...t,id:Math.random().toString(36).slice(2),created_at:new Date().toISOString()}];localStorage.setItem('cgee_templates',JSON.stringify(next))}} }
-                catch{ return {templates:[], addTemplate:()=>{}} }
-              })()
               const progWeeks2 = weeks.filter(w=>w.program_id===programId).sort((a,b)=>a.week_number-b.week_number)
               const tData = {
                 phase:prog.phase, goal:prog.goal,
@@ -1883,14 +1917,29 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
                 {wk.phase&&<Tag v={wk.phase} color={C.c2}/>}
                 <span style={{fontSize:12,color:C.muted}}>{done}/{weekSess.length} done</span>
               </Row>
-              <Row style={{gap:5}}>
+              <Row style={{gap:5,flexWrap:'wrap',justifyContent:'flex-end'}}>
                 {addingSessFor!==wk.id&&<Btn label="+ Session" small onClick={()=>{setAddingSessFor(wk.id);setSF({name:'',session_type:'Strength',date_label:'',notes:''})}}/>}
+                <Btn label="⧉ Duplicate Week" variant="secondary" small onClick={()=>dupWeek(wk)} title="Create a new week as an exact copy of this one"/>
+                <Btn label="↗ Progress +load" variant="ghost" small onClick={()=>setProgressFor(progressFor===wk.id?null:wk.id)} title="New week copied from this one with prescribed loads bumped"/>
                 {clip.session&&<Btn label={`⎘ Paste "${clip.session.name}"`} variant="secondary" small onClick={()=>pasteSession(wk.id)}/>}
                 {progWeeks.length>1&&<Btn label="⬡ Fill Block" variant="ghost" small onClick={()=>fillBlock(wk.id)} title="Copy this week's sessions to all other weeks"/>}
                 <Btn label="⎘ Copy Week" variant="ghost" small onClick={()=>{copyWeek(wk);alert(`Week ${wk.week_number} copied — navigate to another week and click Paste Week`)}}/>
                 <Btn label="✕ Week" variant="danger" small onClick={()=>deleteWeek(wk.id)}/>
               </Row>
             </Row>
+            {progressFor===wk.id&&(
+              <Panel style={{marginBottom:10}}>
+                <h4 style={{color:C.white,marginBottom:4}}>Progress Week {wk.week_number} into a new week</h4>
+                <p style={{fontSize:12,color:C.muted,marginBottom:10}}>Copies this week's sessions into a brand-new week and bumps every prescribed load.</p>
+                <Row style={{gap:6,flexWrap:'wrap'}}>
+                  <Btn label="+2.5%" variant="secondary" small onClick={()=>progressWeek(wk,{type:'pct',val:2.5})}/>
+                  <Btn label="+5%" variant="secondary" small onClick={()=>progressWeek(wk,{type:'pct',val:5})}/>
+                  <Btn label="+2.5kg" variant="secondary" small onClick={()=>progressWeek(wk,{type:'kg',val:2.5})}/>
+                  <Btn label="+5kg" variant="secondary" small onClick={()=>progressWeek(wk,{type:'kg',val:5})}/>
+                  <Btn label="Cancel" variant="ghost" small onClick={()=>setProgressFor(null)}/>
+                </Row>
+              </Panel>
+            )}
             {addingSessFor===wk.id&&(
               <Panel style={{marginBottom:10}}>
                 <h4 style={{color:C.white,marginBottom:10}}>New Session</h4>
@@ -1953,7 +2002,8 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
                             ?<button onClick={()=>updateSession(sess.id,{status:'manual_complete',completed_at:new Date().toISOString()})} style={{background:`${C.green}18`,border:`1px solid ${C.green}40`,borderRadius:5,padding:'4px 10px',color:C.green,fontSize:11,fontWeight:700,cursor:'pointer'}}>✓ Done</button>
                             :<button onClick={()=>updateSession(sess.id,{status:null,completed_at:null})} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:5,padding:'4px 10px',color:C.muted,fontSize:11,cursor:'pointer'}}>↺ Reopen</button>
                           }
-                          <Btn label="⎘" variant="ghost" small onClick={()=>copySession(sess)} title="Copy session"/>
+                          <Btn label="⎘" variant="ghost" small onClick={()=>copySession(sess)} title="Copy session (paste into another week)"/>
+                          <Btn label="⧉" variant="ghost" small onClick={()=>dupSession(sess)} title="Duplicate session in this week"/>
                           {clip.week&&<Btn label={`⎘ Paste Week ${clip.week.week_number}`} variant="secondary" small onClick={()=>pasteWeek(wk)}/>}
                           <Btn label="Open" variant="secondary" small onClick={()=>go('session',{sessionId:sess.id,programId,clientId})}/>
                           <Btn label="✕" variant="danger" small onClick={()=>deleteSession(sess.id)}/>
@@ -2087,7 +2137,7 @@ function TargetTable({ form, setForm }) {
 }
 const BLANK_SET = { completedLoad:'', completedReps:'', rpe:'', notes:'', skipped:false, bandColour:'' }
 
-function SessionDetail({ sessionId, programId, clientId, clients, programs, weeks, sessions, updateSession, saving, go, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, subs=[], clientMode=false }) {
+function SessionDetail({ sessionId, programId, clientId, clients, programs, weeks, sessions, updateSession, saving, go, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, subs=[], clientMode=false, addTemplate }) {
   const sess   = sessions.find(s=>s.id===sessionId)
   const prog   = programs.find(p=>p.id===programId)
   const client = clients.find(c=>c.id===clientId)
@@ -2616,10 +2666,9 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
             )}
             <Btn label="Edit Session" variant="secondary" small onClick={()=>{setEditSess(true);setSF({name:sess.name,session_type:sess.session_type,date_label:sess.date_label||'',notes:sess.notes||''})}}/>
             <Btn label="⊡ Save Template" variant="ghost" small onClick={()=>{
-              const addT=(t)=>{const ts=JSON.parse(localStorage.getItem('cgee_templates')||'[]');ts.push({...t,id:Math.random().toString(36).slice(2),created_at:new Date().toISOString()});localStorage.setItem('cgee_templates',JSON.stringify(ts))}
               const exClean=(safeExercises(sess)||[]).map(e=>({...e,loggedSets:[],force_complete:false}))
               const name=window.prompt('Session template name:',sess.name+' (Template)')
-              if(name){addT({type:'session',name,description:sess.session_type||'',tags:'',data:{name:sess.name,session_type:sess.session_type||'',exercises:exClean}});alert('✓ Session template saved — view it under Templates in the sidebar')}
+              if(name){addTemplate({type:'session',name,description:sess.session_type||'',tags:'',data:{name:sess.name,session_type:sess.session_type||'',exercises:exClean}});alert('✓ Session template saved — view it under Templates in the sidebar')}
             }}/>
           </Row>
         </Row>
@@ -2769,8 +2818,7 @@ const TEMPLATE_TYPES = [
 ]
 const LABEL_COLORS = ['#FFA500','#2563EB','#22C55E','#8B5CF6','#EC4899','#EF4444','#14B8A6','#F97316','#FACC15']
 
-function TemplatesView({ sessions, programs, weeks, clients, addProgram, addWeek, addSession, go, initialTab }) {
-  const { templates, addTemplate, deleteTemplate, updateTemplate } = useTemplates()
+function TemplatesView({ sessions, programs, weeks, clients, addProgram, addWeek, addSession, go, initialTab, templates, addTemplate, deleteTemplate, updateTemplate }) {
   const [tab,    setTab]    = useState(initialTab||'program')
   const [useT,   setUseT]   = useState(null)     // program template being applied
   const [addingScheme, setAddingScheme] = useState(false)
@@ -4808,7 +4856,7 @@ function BodyTab({clientId,measurements,addMeasurement,deleteMeasurement,saving}
     await addMeasurement(d);setF(BLANK_MEAS);setAdding(false)
   }
   const latest=cMeas[0]
-  const weightData=[...cMeas].reverse().filter(m=>m.body_weight_kg!=null&&m.body_weight_kg!=='').map(m=>({date:mDate(m.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short'}),weight:parseFloat(m.body_weight_kg)}))
+  const wAscB=[...cMeas].filter(m=>m.body_weight_kg!=null&&m.body_weight_kg!=='').sort((a,b)=>mDate(a.measured_at)-mDate(b.measured_at)).map(m=>({t:mDate(m.measured_at),w:parseFloat(m.body_weight_kg)})); let _trb=null; const wSeries=wAscB.map((d,i)=>{_trb=i===0?d.w:_trb+0.1*(d.w-_trb); return {...d,trend:Math.round(_trb*10)/10}})
   return(
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       {latest&&(
@@ -4819,7 +4867,7 @@ function BodyTab({clientId,measurements,addMeasurement,deleteMeasurement,saving}
           </div>
         </div>
       )}
-      {weightData.length>=2&&(<div><SL>Weight Trend (kg)</SL><SvgLineChart data={weightData} xKey="date" yKey="weight" color={C.c2} height={180} label="kg"/></div>)}
+      {wSeries.length>=2&&(<div><SL>Weight Trend (kg)</SL><WeightTrendChart series={wSeries} units="kg"/><div style={{display:'flex',gap:18,marginTop:8,justifyContent:'center'}}><span style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:C.muted}}><span style={{width:13,height:2,background:C.c3,display:'inline-block',borderRadius:2}}/>Scale weight (daily reading)</span><span style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:C.muted}}><span style={{width:13,height:3,background:C.amber,display:'inline-block',borderRadius:2}}/>Actual weight (true)</span></div></div>)}
       <div>
         <SL right={!adding&&<Btn label="+ Add Measurement" small onClick={()=>{setF(BLANK_MEAS);setAdding(true)}}/>}>Measurement History</SL>
         {adding&&(
@@ -6335,7 +6383,178 @@ function getSessionPBs(sessId, pbs){
   })
   return out
 }
-function ClientSessionSummary({ sess, programName, status, onResume, pbHits }){
+function GuidedSession({ sess, programName, updateSession, onExit, onFinish }){
+  const exs = safeExercises(sess)
+  const setCount = e => parseInt(e.sets) || (Array.isArray(e.targets)?e.targets.length:0) || (Array.isArray(e.loggedSets)?e.loggedSets.length:0) || 1
+  const saveExs = (newExs) => { const ns=computeSessionStatus({...sess,exercises:newExs}); updateSession(sess.id,{exercises:newExs, status:ns, completed_at: ns==='complete'?(sess.completed_at||new Date().toISOString()):null}) }
+
+  const steps = (()=>{
+    const order=[], groups={}
+    exs.forEach((e,i)=>{ const key = e.isWarmup ? ('w'+i) : (((e.blockLabel||'').replace(/[0-9]+$/,'').toUpperCase())||('x'+i)); if(!groups[key]){groups[key]=[];order.push(key)} groups[key].push(i) })
+    const out=[]
+    order.forEach(key=>{ const idxs=groups[key]
+      if(idxs.length<=1){ const i=idxs[0], n=setCount(exs[i]); for(let s=0;s<n;s++) out.push({exIndex:i,setIdx:s,nSets:n,superset:false}) }
+      else { const mx=Math.max(...idxs.map(i=>setCount(exs[i]))); for(let s=0;s<mx;s++) idxs.forEach(i=>{ if(s<setCount(exs[i])) out.push({exIndex:i,setIdx:s,nSets:setCount(exs[i]),superset:true}) }) }
+    })
+    return out
+  })()
+  const isStepDone = st => { const e=exs[st.exIndex]; const lg=(e.loggedSets||[]).find(x=>x.setNumber===st.setIdx+1); return !!(lg&&setIsDone(lg)) }
+  const firstUndone = (()=>{ for(let k=0;k<steps.length;k++) if(!isStepDone(steps[k])) return k; return 0 })()
+
+  const [cursor,setCursor] = React.useState(firstUndone)
+  const c = Math.max(0, Math.min(cursor, steps.length-1))
+  const step = steps[c] || {exIndex:0,setIdx:0,nSets:1,superset:false}
+  const ex = exs[step.exIndex] || {}
+  const setNum = step.setIdx+1
+  const logged = (ex.loggedSets||[]).find(x=>x.setNumber===setNum) || {}
+  const tgt = (Array.isArray(ex.targets)&&ex.targets[step.setIdx]) ? ex.targets[step.setIdx] : {}
+  const pVal = (...arr) => { for(const v of arr){ if(v!=null&&String(v).trim()!=='') return String(v).trim() } return '' }
+  const prescLoad = pVal(logged.completedLoad, tgt.load, ex.load)
+  const prescReps = pVal(logged.completedReps, tgt.reps, ex.reps)
+  const prescRpe  = pVal(logged.rpe, tgt.rpe, ex.rpe)
+
+  const [draft,setDraft] = React.useState({load:prescLoad,reps:prescReps,rpe:prescRpe})
+  React.useEffect(()=>{ setDraft({load:prescLoad,reps:prescReps,rpe:prescRpe}) },[c, sess.id])
+
+  const [timerMode,setTimerMode] = React.useState('off')
+  const [resting,setResting] = React.useState(false)
+  const [restSec,setRestSec] = React.useState(0)
+  const [restTarget,setRestTarget] = React.useState(90)
+  React.useEffect(()=>{ if(!resting) return; const id=setInterval(()=>setRestSec(s=>s+1),1000); return ()=>clearInterval(id) },[resting])
+  React.useEffect(()=>{ if(resting&&timerMode==='down'&&restSec>=restTarget) setResting(false) },[restSec,resting,timerMode,restTarget])
+
+  const parseRest = (r)=>{ if(r==null||r==='') return 90; const s=String(r).trim(); if(s.indexOf(':')>=0){ const p=s.split(':'); return (parseInt(p[0])||0)*60+(parseInt(p[1])||0) } const n=parseInt(s); return isNaN(n)?90:n }
+  const fmt = (s)=>{ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0') }
+  const bump = (k,d,min=0)=> setDraft(p=>{ const cur=parseFloat(p[k]); const b=isNaN(cur)?0:cur; let v=Math.round((b+d)*10)/10; if(v<min)v=min; return {...p,[k]:String(v)} })
+
+  const totalSteps = steps.length
+  const doneSteps = steps.filter(isStepDone).length
+
+  const logSet = ()=>{
+    const ls=[...(ex.loggedSets||[])]
+    const idx=ls.findIndex(x=>x.setNumber===setNum)
+    const base = idx>=0 ? ls[idx] : {id:uid(),setNumber:setNum}
+    const entry = {...base, confirmed:true, skipped:false}
+    if(draft.load!=='') entry.completedLoad=draft.load; else delete entry.completedLoad
+    if(draft.reps!=='') entry.completedReps=draft.reps; else delete entry.completedReps
+    if(draft.rpe!=='') entry.rpe=draft.rpe
+    if(idx>=0) ls[idx]=entry; else ls.push(entry)
+    saveExs(exs.map((x,i)=> i===step.exIndex ? {...x,loggedSets:ls} : x))
+    const restFrom = ex.rest
+    if(c < steps.length-1){ setCursor(c+1); if(timerMode!=='off'){ setRestTarget(parseRest(restFrom)); setRestSec(0); setResting(true) } }
+    else { onFinish && onFinish() }
+  }
+  const jumpToEx = (exIndex)=>{ setResting(false); for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex && !isStepDone(steps[k])){ setCursor(k); return } } for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex){ setCursor(k); return } } }
+  const finish = ()=>{ const ns=computeSessionStatus(sess); if(ns!=='complete') updateSession(sess.id,{status:'manual_complete',completed_at:new Date().toISOString()}); onFinish&&onFinish() }
+
+  const exOrder=[]; { const seen={}; steps.forEach(st=>{ if(!seen[st.exIndex]){seen[st.exIndex]=1; exOrder.push(st.exIndex)} }) }
+  const exDone = i => { const e=exs[i]; return Math.min((e.loggedSets||[]).filter(setIsDone).length, setCount(e)) }
+
+  const tx = React.useRef(null)
+  const onTouchStart = e => { tx.current = e.touches[0].clientX }
+  const onTouchEnd = e => { if(tx.current==null) return; const dx=e.changedTouches[0].clientX-tx.current; tx.current=null; if(Math.abs(dx)>55){ setResting(false); if(dx<0) setCursor(p=>Math.min(steps.length-1,p+1)); else setCursor(p=>Math.max(0,p-1)) } }
+
+  if(!exs.length) return <div style={{padding:24,color:C.muted,textAlign:'center'}}>No exercises in this session.</div>
+
+  const remaining = Math.max(0, restTarget-restSec)
+  const RC = 2*Math.PI*64
+  const ringFrac = timerMode==='down' ? (restTarget>0?remaining/restTarget:0) : 1
+  const navBtn = dis => ({width:42,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 0',color:dis?C.faint:C.white,fontSize:16,background:'transparent',cursor:dis?'default':'pointer',flexShrink:0})
+
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+        <button onClick={onExit} style={{background:'none',border:'none',color:C.amber,fontSize:13,fontWeight:700,cursor:'pointer',padding:0}}>{'\u2039'} Back</button>
+        <div style={{flex:1,textAlign:'center',fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:12,letterSpacing:'0.06em',color:C.amber,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(sess.name||'SESSION').toUpperCase()}</div>
+        <button onClick={finish} style={{background:`${C.green}18`,border:`1px solid ${C.green}40`,borderRadius:7,padding:'5px 10px',color:C.green,fontSize:11,fontWeight:700,cursor:'pointer'}}>Finish</button>
+      </div>
+
+      <div style={{height:4,background:C.border,borderRadius:3,marginBottom:8,overflow:'hidden'}}><div style={{width:`${totalSteps?Math.round(doneSteps/totalSteps*100):0}%`,height:'100%',background:C.amber,borderRadius:3,transition:'width .3s'}}/></div>
+      <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:12}}>{doneSteps} / {totalSteps} sets done</div>
+
+      <div style={{display:'flex',gap:7,overflowX:'auto',paddingBottom:6,marginBottom:14}}>
+        {exOrder.map(i=>{ const e=exs[i]; const active=i===step.exIndex; const dn=exDone(i), tot=setCount(e); const full=dn>=tot&&tot>0
+          return (
+            <button key={i} onClick={()=>jumpToEx(i)} style={{flex:'0 0 auto',minWidth:58,textAlign:'left',background:active?`${C.amber}14`:C.card,border:`1px solid ${active?C.amber:(full?`${C.green}55`:C.border)}`,borderRadius:10,padding:'7px 9px',cursor:'pointer'}}>
+              <div style={{fontSize:11,fontWeight:700,color:active?C.amber:(full?C.green:C.muted)}}>{e.isWarmup?'Warm':(e.blockLabel||'—')}</div>
+              <div style={{fontSize:11,color:active?C.white:C.muted,whiteSpace:'nowrap',maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'}}>{e.name}</div>
+              <div style={{fontSize:11,color:active?C.amber:C.faint}}>{dn}/{tot}</div>
+            </button>
+          )
+        })}
+      </div>
+
+      {resting ? (
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:'18px 16px',textAlign:'center',marginBottom:14}}>
+          <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:13,letterSpacing:'0.1em',color:C.c3,marginBottom:10}}>RESTING</div>
+          {timerMode==='down' ? (
+            <div style={{display:'flex',justifyContent:'center',marginBottom:8}}>
+              <svg width="150" height="150" viewBox="0 0 150 150">
+                <circle cx="75" cy="75" r="64" fill="none" stroke={C.border} strokeWidth="9"/>
+                <circle cx="75" cy="75" r="64" fill="none" stroke={C.amber} strokeWidth="9" strokeLinecap="round" strokeDasharray={RC} strokeDashoffset={RC*(1-ringFrac)} transform="rotate(-90 75 75)"/>
+                <text x="75" y="72" textAnchor="middle" fontFamily="Space Grotesk,sans-serif" fontWeight="700" fontSize="34" fill={C.white}>{fmt(remaining)}</text>
+                <text x="75" y="94" textAnchor="middle" fontFamily="Inter,sans-serif" fontSize="11" fill={C.faint}>of {fmt(restTarget)}</text>
+              </svg>
+            </div>
+          ) : (
+            <div style={{margin:'10px 0'}}><div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:42,color:C.white,lineHeight:1}}>{fmt(restSec)}</div><div style={{fontSize:11,color:C.faint,marginTop:4}}>resting</div></div>
+          )}
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.85)',marginBottom:2}}>Up next: <span style={{color:C.c3,fontWeight:700}}>{ex.blockLabel?ex.blockLabel+' · ':''}{ex.name}</span></div>
+          <div style={{fontSize:11,color:C.faint,marginBottom:14}}>Set {setNum} of {step.nSets}</div>
+          <div style={{display:'flex',gap:8}}>
+            {timerMode==='down'&&<button onClick={()=>setRestTarget(t=>Math.max(0,t-15))} style={{flex:1,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px',fontSize:13,color:C.muted,background:'transparent',cursor:'pointer'}}>{'\u2212'}15s</button>}
+            <button onClick={()=>setResting(false)} style={{flex:1.4,border:`1px solid ${C.amber}55`,borderRadius:10,padding:'11px',fontSize:13,color:C.amber,fontWeight:700,background:`${C.amber}15`,cursor:'pointer'}}>Done resting {'\u2192'}</button>
+            {timerMode==='down'&&<button onClick={()=>setRestTarget(t=>t+15)} style={{flex:1,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px',fontSize:13,color:C.muted,background:'transparent',cursor:'pointer'}}>+15s</button>}
+          </div>
+        </div>
+      ) : (
+        <div onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:15,marginBottom:12}}>
+            <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:9,flexWrap:'wrap'}}>
+              <span style={{background:`${C.amber}26`,color:C.amber,fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6}}>{ex.isWarmup?'Warm-up':(ex.blockLabel||'—')}</span>
+              <span style={{fontSize:11,color:C.c3,fontWeight:700,letterSpacing:'0.05em'}}>{step.superset?'SUPERSET · ':''}SET {setNum} OF {step.nSets}</span>
+            </div>
+            <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:21,color:C.white,marginBottom:6}}>{ex.name}</div>
+            <div style={{fontSize:13,color:'rgba(255,255,255,0.85)',marginBottom:3}}>{[prescReps&&`${prescReps} reps`, prescLoad&&`@ ${prescLoad}${/[a-z]/i.test(String(prescLoad))?'':' kg'}`, prescRpe&&`RPE ${prescRpe}`].filter(Boolean).join(' · ')||'Log what you hit'}</div>
+            {(ex.tempo||ex.rest)&&<div style={{fontSize:11,color:C.faint}}>{[ex.tempo&&`Tempo ${ex.tempo}`, ex.rest&&`Rest ${ex.rest}`].filter(Boolean).join(' · ')}</div>}
+            {ex.notes&&<div style={{fontStyle:'italic',fontSize:12,color:C.muted,borderLeft:`2px solid ${C.amber}66`,paddingLeft:8,marginTop:10}}>{ex.notes}</div>}
+          </div>
+
+          <div style={{display:'flex',gap:8,marginBottom:12}}>
+            {[{k:'load',lab:'LOAD kg',st:2.5},{k:'reps',lab:'REPS',st:1},{k:'rpe',lab:'RPE',st:0.5}].map(f=>(
+              <div key={f.k} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'8px 6px'}}>
+                <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:5}}>{f.lab}</div>
+                <div style={{display:'flex',alignItems:'center',gap:3}}>
+                  <button onClick={()=>bump(f.k,-f.st)} style={{width:22,height:26,border:`1px solid ${C.border}`,borderRadius:6,background:'transparent',color:C.muted,fontSize:14,cursor:'pointer',flexShrink:0,lineHeight:1}}>{'\u2212'}</button>
+                  <input value={draft[f.k]} onChange={e=>setDraft(p=>({...p,[f.k]:e.target.value}))} inputMode="decimal" placeholder="–" style={{flex:1,minWidth:0,width:'100%',background:'transparent',border:'none',color:C.white,fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:20,textAlign:'center',outline:'none',padding:0}}/>
+                  <button onClick={()=>bump(f.k,f.st)} style={{width:22,height:26,border:`1px solid ${C.border}`,borderRadius:6,background:'transparent',color:C.muted,fontSize:14,cursor:'pointer',flexShrink:0,lineHeight:1}}>+</button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {(()=>{ const prev=(ex.loggedSets||[]).filter(setIsDone).filter(x=>x.setNumber<setNum).sort((a,b)=>b.setNumber-a.setNumber)[0]; if(!prev) return null; const l=prev.completedLoad,r=prev.completedReps,rp=prev.rpe; return <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:12}}>Set {prev.setNumber}: {[l&&`${l} kg`, r&&`× ${r}`, rp&&`@ RPE ${rp}`].filter(Boolean).join(' ')||'logged'}</div> })()}
+
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+            <button onClick={()=>{setResting(false);setCursor(Math.max(0,c-1))}} disabled={c===0} style={navBtn(c===0)}>{'\u2039'}</button>
+            <button onClick={logSet} style={{flex:1,background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Update set':'Log set'}{timerMode!=='off'?' & rest':''}</button>
+            <button onClick={()=>{setResting(false);setCursor(Math.min(steps.length-1,c+1))}} disabled={c>=steps.length-1} style={navBtn(c>=steps.length-1)}>{'\u203a'}</button>
+          </div>
+          <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:16}}>Swipe or use {'\u2039 \u203a'} to move between sets without logging</div>
+        </div>
+      )}
+
+      <div style={{fontSize:11,color:C.faint,marginBottom:6}}>Rest timer</div>
+      <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:10,overflow:'hidden'}}>
+        {[['off','Off'],['down','Count down'],['up','Count up']].map(([v,l],i)=>(
+          <button key={v} onClick={()=>{setTimerMode(v); if(v==='off')setResting(false)}} style={{flex:1,textAlign:'center',padding:9,fontSize:12,fontWeight:timerMode===v?700:400,cursor:'pointer',border:'none',borderLeft:i?`1px solid ${C.border}`:'none',background:timerMode===v?`${C.amber}15`:'transparent',color:timerMode===v?C.amber:C.muted}}>{l}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits }){
   const exs = safeExercises(sess)
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
@@ -6367,9 +6586,16 @@ function ClientSessionSummary({ sess, programName, status, onResume, pbHits }){
           </div>
         </div>
       )}
-      <button onClick={onResume} style={{width:'100%',background:C.amber,color:C.bg,border:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:15,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em',marginBottom:18}}>
-        <Icon name="play" size={15} color={C.bg} fill={C.bg}/>{btnLabel}
-      </button>
+      {status==='complete' ? (
+        <button onClick={onResume} style={{width:'100%',background:'transparent',color:C.white,border:`1px solid ${C.border}`,padding:'14px 16px',borderRadius:11,fontWeight:700,fontSize:14,cursor:'pointer',marginBottom:18,fontFamily:'Space Grotesk,sans-serif'}}>Review session</button>
+      ) : (
+        <div style={{marginBottom:18}}>
+          <button onClick={onStart} style={{width:'100%',background:C.amber,color:C.bg,border:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:15,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em',marginBottom:8}}>
+            <Icon name="play" size={15} color={C.bg} fill={C.bg}/>{btnLabel}
+          </button>
+          <button onClick={onResume} style={{width:'100%',background:'transparent',color:C.muted,border:`1px solid ${C.border}`,padding:'11px 16px',borderRadius:11,fontWeight:600,fontSize:13,cursor:'pointer'}}>Log all manually</button>
+        </div>
+      )}
       <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>{status==='notstarted'?'Prescribed':'What you hit'}</div>
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
         {main.map(ex=>{
@@ -6436,12 +6662,12 @@ function StreakHeatmap({ levelByDay, current, longest, total }){
         {[0,1,2,3,4].map(l=>(<span key={l} style={{width:11,height:11,borderRadius:3,background:cc(l),border:l===0?`1px solid ${C.border}`:'none'}}/>))}
         <span style={{fontSize:10,color:C.faint}}>More</span>
       </div>
-      <div style={{fontSize:11,color:C.faint,marginTop:14,textAlign:'center',lineHeight:1.5}}>Each square is a day. Greener = more work logged.</div>
+      <div style={{fontSize:11,color:C.faint,marginTop:14,textAlign:'center',lineHeight:1.5}}>Each square is a day. Greener = more of that day's session completed.</div>
     </div>
   )
 }
 
-function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracked=0 }){
+function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracked=0, measurements=[], addMeasurement, deleteMeasurement }){
   const c = client || {}
   const hsInit = (c.health_screen && typeof c.health_screen==='object') ? c.health_screen : {}
   const [form, setForm] = React.useState({
@@ -6551,7 +6777,7 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
     {section('body','sliders','Body',<>
       {field('Height', num('height_cm','183','cm'))}
       {field('Starting weight', num('start_weight','88', form.units||'kg'))}
-      <div style={{fontSize:11,color:C.faint,marginTop:2,lineHeight:1.4}}>Your ongoing weight is tracked over time in the Progress tab.</div>
+      <ClientMeasurements clientId={client.id} measurements={measurements} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement} units={form.units||'kg'} embedded/>
     </>)}
 
     {section('training','dumbbell','Training',<>
@@ -6715,7 +6941,139 @@ function ClientWeightCard({ clientId, measurements, addMeasurement, units='kg' }
 }
 
 
-function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
+function WeightTrendChart({ series, units }){
+  if(!series || series.length<2) return null
+  const W=320,H=160,padL=30,padR=8,padT=10,padB=20
+  const ws=series.map(d=>d.w), trs=series.map(d=>d.trend)
+  let mn=Math.min(...ws,...trs), mx=Math.max(...ws,...trs); if(mn===mx){mn-=1;mx+=1}
+  const rng=mx-mn, p=rng*0.12; mn-=p; mx+=p
+  const n=series.length
+  const t0=series[0].t.getTime(), t1=series[n-1].t.getTime(), span=(t1-t0)||1
+  const X=d=> padL + ((d.t.getTime()-t0)/span)*(W-padL-padR)
+  const Y=v=> padT + (1-(v-mn)/(mx-mn))*(H-padT-padB)
+  const line=key=> series.map((d,i)=>`${i===0?'M':'L'}${X(d).toFixed(1)} ${Y(d[key]).toFixed(1)}`).join(' ')
+  const fmt=d=> d?d.toLocaleDateString('en-AU',{day:'numeric',month:'short'}):''
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{display:'block'}}>
+      {[0,0.5,1].map((g,i)=>{ const yy=padT+g*(H-padT-padB); const vv=mx-(g*(mx-mn)); return (<g key={i}><line x1={padL} y1={yy} x2={W-padR} y2={yy} stroke={C.border} strokeWidth="1"/><text x={padL-4} y={yy+3} textAnchor="end" fontSize="9" fill={C.faint}>{Math.round(vv)}</text></g>) })}
+      <path d={line('w')} fill="none" stroke={C.c3} strokeWidth="1.5" opacity="0.65"/>
+      {series.map((d,i)=>(<circle key={i} cx={X(d)} cy={Y(d.w)} r="2" fill={C.c3}/>))}
+      <path d={line('trend')} fill="none" stroke={C.amber} strokeWidth="2.5"/>
+      <text x={padL} y={H-5} fontSize="9" fill={C.faint}>{fmt(series[0].t)}</text>
+      <text x={W-padR} y={H-5} textAnchor="end" fontSize="9" fill={C.faint}>{fmt(series[n-1].t)}</text>
+    </svg>
+  )
+}
+
+function ClientMeasurements({ clientId, measurements, addMeasurement, deleteMeasurement, units='kg', embedded=false }){
+  const cMeas = [...(measurements||[]).filter(m=>m.client_id===clientId)].sort((a,b)=>mDate(b.measured_at)-mDate(a.measured_at))
+  const [wt,setWt] = React.useState('')
+  const [wd,setWd] = React.useState(new Date().toISOString().split('T')[0])
+  const [savingW,setSavingW] = React.useState(false)
+  const [adding,setAdding] = React.useState(false)
+  const [f,setF] = React.useState(BLANK_MEAS)
+  const [savingM,setSavingM] = React.useState(false)
+  const [period,setPeriod] = React.useState('3m')
+  const ff = k => v => setF(p=>({...p,[k]:v}))
+
+  const today = new Date().toISOString().split('T')[0]
+  const logWeight = async () => {
+    const w=parseFloat(wt); if(!w||w<=0||!wd) return
+    setSavingW(true)
+    try{ await addMeasurement({client_id:clientId, measured_at:wd, body_weight_kg:w}) }catch(e){}
+    setWt(''); setSavingW(false)
+  }
+  const saveMeas = async () => {
+    const d={...f,client_id:clientId}
+    MEAS_FIELDS.forEach(({key})=>{ if(d[key]==='') d[key]=null; else if(d[key]) d[key]=parseFloat(d[key]) })
+    setSavingM(true)
+    try{ await addMeasurement(d) }catch(e){}
+    setF(BLANK_MEAS); setAdding(false); setSavingM(false)
+  }
+
+  const wAsc = [...cMeas].filter(m=>m.body_weight_kg!=null&&m.body_weight_kg!=='').sort((a,b)=>mDate(a.measured_at)-mDate(b.measured_at)).map(m=>({t:mDate(m.measured_at), w:parseFloat(m.body_weight_kg)}))
+  let trVal=null
+  const series = wAsc.map((d,i)=>{ trVal = i===0 ? d.w : trVal+0.1*(d.w-trVal); return {...d, trend:Math.round(trVal*10)/10} })
+  const latest = series[series.length-1]
+  const PERIODS=[['1w',7,'1W'],['1m',31,'1M'],['3m',92,'3M'],['6m',183,'6M'],['all',null,'All']]
+  const cut = (PERIODS.find(p=>p[0]===period)||[])[1]
+  const view = cut ? series.filter(d=>(Date.now()-d.t.getTime())<=cut*86400000) : series
+  const vf=view[0], vl=view[view.length-1]
+  const chg = (vf&&vl) ? (vl.trend-vf.trend) : 0
+  const pct = (vf&&vf.trend) ? (chg/vf.trend*100) : 0
+  const dir = Math.abs(chg)<0.05 ? 'flat' : (chg>0?'up':'down')
+
+  return (
+    <div style={{marginTop:embedded?8:22}}>
+      {!embedded && <h2 style={{fontSize:22,fontWeight:600,color:C.white,marginBottom:14}}>Body weight &amp; measurements</h2>}
+
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:16,marginBottom:14}}>
+        <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:10}}>Daily weight</div>
+        {latest && (
+          <div style={{display:'flex',gap:22,marginBottom:14}}>
+            <div><div style={{fontSize:24,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{latest.w}<span style={{fontSize:12,color:C.muted,fontWeight:600}}> {units}</span></div><div style={{fontSize:10,color:C.c3,marginTop:4,textTransform:'uppercase',letterSpacing:'0.05em',fontWeight:700}}>Scale</div></div>
+            <div><div style={{fontSize:24,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{latest.trend}<span style={{fontSize:12,color:C.muted,fontWeight:600}}> {units}</span></div><div style={{fontSize:10,color:C.amber,marginTop:4,textTransform:'uppercase',letterSpacing:'0.05em',fontWeight:700}}>Actual</div></div>
+          </div>
+        )}
+        <div style={{display:'flex',gap:8,marginBottom:8}}>
+          <input type="date" value={wd} max={today} onChange={e=>setWd(e.target.value)} style={{flex:1,boxSizing:'border-box',background:C.ink,border:`1px solid ${C.border}`,borderRadius:9,color:C.white,fontSize:13,padding:'9px 12px',outline:'none',fontFamily:'inherit'}}/>
+          <div style={{position:'relative',flex:1}}>
+            <input value={wt} onChange={e=>setWt(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')logWeight()}} type="number" inputMode="decimal" placeholder="Weight" style={{width:'100%',boxSizing:'border-box',background:C.ink,border:`1px solid ${C.border}`,borderRadius:9,color:C.white,fontSize:14,padding:'10px 40px 10px 12px',outline:'none',fontFamily:'inherit'}}/>
+            <span style={{position:'absolute',right:12,top:11,fontSize:12,color:C.faint}}>{units}</span>
+          </div>
+          <button onClick={logWeight} disabled={savingW||!wt} style={{background:wt?C.amber:C.ink,color:wt?C.bg:C.faint,border:`1px solid ${wt?C.amber:C.border}`,borderRadius:9,fontSize:13,fontWeight:700,padding:'0 18px',cursor:wt?'pointer':'default',flexShrink:0}}>Log</button>
+        </div>
+        <div style={{fontSize:10,color:C.faint,marginBottom:2}}>{wd===today?'Logging for today':`Back-logging for ${mDate(wd).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})}`}</div>
+        {series.length>=2 ? (<>
+          <div style={{display:'flex',gap:5,marginTop:14}}>
+            {PERIODS.map(([k,,lab])=>(
+              <button key={k} onClick={()=>setPeriod(k)} style={{flex:'1 1 0',minWidth:0,padding:'5px 0',borderRadius:7,fontSize:11,fontWeight:600,cursor:'pointer',border:`1px solid ${period===k?C.amber:C.border}`,background:period===k?`${C.amber}18`:'transparent',color:period===k?C.amber:C.muted}}>{lab}</button>
+            ))}
+          </div>
+          {vf&&vl&&vf!==vl && (
+            <div style={{display:'flex',alignItems:'center',gap:7,marginTop:12}}>
+              <span style={{fontSize:17,color:C.muted,lineHeight:1}}>{dir==='up'?'↑':dir==='down'?'↓':'→'}</span>
+              <span style={{fontSize:15,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{chg>0?'+':''}{chg.toFixed(1)} {units}</span>
+              <span style={{fontSize:12,color:C.muted}}>({pct>0?'+':''}{pct.toFixed(1)}%)</span>
+              <span style={{fontSize:11,color:C.faint,marginLeft:'auto'}}>{dir==='flat'?'holding steady':dir==='up'?'trending up':'trending down'}</span>
+            </div>
+          )}
+          {view.length>=2
+            ? <div style={{marginTop:12}}><WeightTrendChart series={view} units={units}/></div>
+            : <div style={{fontSize:11,color:C.faint,marginTop:12,lineHeight:1.4}}>No readings in this range — pick a longer time frame.</div>}
+          <div style={{display:'flex',gap:18,marginTop:8,justifyContent:'center'}}>
+            <span style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:C.muted}}><span style={{width:13,height:2,background:C.c3,display:'inline-block',borderRadius:2}}/>Scale weight (daily reading)</span>
+            <span style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:C.muted}}><span style={{width:13,height:3,background:C.amber,display:'inline-block',borderRadius:2}}/>Actual weight (true)</span>
+          </div>
+        </>) : <div style={{fontSize:11,color:C.faint,marginTop:10,lineHeight:1.4}}>Log a few days to see your scale readings and a smoothed trend line.</div>}
+      </div>
+
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+        <span style={{fontSize:13,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>Measurements</span>
+        {!adding && <button onClick={()=>{setF(BLANK_MEAS);setAdding(true)}} style={{background:C.ink,color:C.white,border:`1px solid ${C.border}`,borderRadius:8,fontSize:12,fontWeight:600,padding:'7px 13px',cursor:'pointer'}}>+ Log measurement</button>}
+      </div>
+      {adding && (
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,marginBottom:12}}>
+          <div style={{marginBottom:10}}><TI label="Date" value={f.measured_at} onChange={ff('measured_at')} type="date"/></div>
+          <G2 style={{marginBottom:10}}>{MEAS_FIELDS.map(({key,label,unit})=>(<TI key={key} label={`${label} (${unit})`} value={f[key]} onChange={ff(key)} placeholder="—" type="number"/>))}</G2>
+          <div style={{marginBottom:10}}><TA label="Notes" value={f.notes} onChange={ff('notes')} rows={2}/></div>
+          <Row><Btn label="Save" onClick={saveMeas} loading={savingM}/><Btn label="Cancel" variant="secondary" onClick={()=>setAdding(false)}/></Row>
+        </div>
+      )}
+      {cMeas.length===0 && !adding && <p style={{fontSize:13,color:C.faint}}>No measurements logged yet.</p>}
+      {cMeas.map(m=>(
+        <div key={m.id} style={{borderBottom:`1px solid ${C.border}`,padding:'9px 2px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,color:C.amber,fontWeight:600,minWidth:84}}>{mDate(m.measured_at).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})}</span>
+          {MEAS_FIELDS.filter(({key})=>m[key]!=null).map(({key,label,unit})=>(<span key={key} style={{fontSize:12,color:C.muted}}>{label}: <strong style={{color:C.white}}>{m[key]}{unit}</strong></span>))}
+          {deleteMeasurement && <button onClick={()=>{if(window.confirm('Delete this measurement?'))deleteMeasurement(m.id)}} style={{background:'none',border:'none',color:C.faint,cursor:'pointer',fontSize:14,marginLeft:'auto',padding:0,lineHeight:1}}>&times;</button>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+
+function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, deleteMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
@@ -6723,7 +7081,8 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const [openSessionId, setOpenSessionId] = useState(null)
   const [weekOffset, setWeekOffset] = useState(0)
   const [sessionFull, setSessionFull] = useState(false)
-  const openSess = (id, full=false) => { setSessionFull(!!full); setOpenSessionId(id) }
+  const [guided, setGuided] = useState(false)
+  const openSess = (id, full=false) => { setSessionFull(!!full); setGuided(false); setOpenSessionId(id) }
   const [progressEx, setProgressEx] = useState(null)
   const [showStreak, setShowStreak] = useState(false)
 
@@ -6766,9 +7125,10 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
       missed: !done && !inProgress && !skipped && d<todayStart && daySess.some(x=>!sessSkipped(x.sess)),
       isToday:d.getTime()===todayStart.getTime(), isPast:d<todayStart }
   })
-  const weeklyScheduled = datedSessions.filter(x=>x.date>=weekStart && x.date<weekEnd).length
-  const weeklyDone = datedSessions.filter(x=>x.date>=weekStart && x.date<weekEnd && sessDone(x.sess)).length
+  const weeklyScheduled = datedSessions.filter(x=>x.date>=viewWeekStart && x.date<viewWeekEnd).length
+  const weeklyDone = datedSessions.filter(x=>x.date>=viewWeekStart && x.date<viewWeekEnd && sessDone(x.sess)).length
   const weekPct = weeklyScheduled>0 ? Math.round(weeklyDone/weeklyScheduled*100) : 0
+  const weekCardLabel = weekOffset===0?'This Week':weekOffset===1?'Next Week':weekOffset===-1?'Last Week':`Wk of ${viewWeekStart.toLocaleDateString('en-AU',{day:'numeric',month:'short'})}`
 
   // Streak — forgiving: skips & rest days are transparent; a miss only resets after a 2-day mercy with no recovery
   const DAY = 86400000
@@ -6791,10 +7151,17 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   }
   if(streak===0) streakAtRisk = false
   const totalDone = sessions.filter(sessDone).length
-  const setsByDay = {}
-  datedSessions.forEach(x=>{ if(sessDone(x.sess)){ const dn=dayN(x.date); const n=safeExercises(x.sess).reduce((a,e)=>a+(e.loggedSets||[]).filter(setIsDone).length,0); setsByDay[dn]=Math.max(setsByDay[dn]||0,n) } })
+  const workByDay = {}
+  sessions.filter(sessDone).forEach(s=>{
+    const _dt = s.completed_at ? new Date(s.completed_at) : getSessionDate(s, allSessions, weeks, programs)
+    if(!_dt||isNaN(_dt)) return
+    const dn=dayN(_dt); const exs=safeExercises(s)
+    const done = exs.reduce((a,e)=>a+(e.loggedSets||[]).filter(setIsDone).length,0)
+    const presc = exs.filter(e=>!e.isWarmup).reduce((a,e)=>a+(parseInt(e.sets)|| (Array.isArray(e.targets)?e.targets.length:0) ||1),0)
+    const w = workByDay[dn]||(workByDay[dn]={done:0,presc:0}); w.done+=done; w.presc+=presc
+  })
   const levelByDay = {}
-  Object.keys(setsByDay).forEach(k=>{ const n=setsByDay[k]; levelByDay[k]= n>=26?4: n>=16?3: n>=8?2: 1 })
+  Object.keys(workByDay).forEach(k=>{ const {done,presc}=workByDay[k]; if(done<=0){ levelByDay[k]=1; return } const r = presc>0 ? done/presc : 1; levelByDay[k]= r>=0.9?4 : r>=0.6?3 : r>=0.3?2 : 1 })
   let _run=0,_best=0; const _chron=streakItems.slice().sort((a,b)=>a.dn-b.dn)
   for(const it of _chron){ if(it.kind==='done'){ _run++; if(_run>_best)_best=_run; continue } if(it.kind==='skip'||it.kind==='pending') continue; const _f=doneDayNs.some(cd=>cd>it.dn&&cd<=it.dn+2*DAY); if(_f) continue; _run=0 }
   const longestStreak=_best
@@ -6809,6 +7176,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const topPBs = pbs.map(p=>({name:p.name, e1rm:Math.max(0,...p.history.map(h=>h.e1rm||0))})).filter(x=>x.e1rm>0).sort((a,b)=>b.e1rm-a.e1rm).slice(0,3)
 
   const firstName = (client.name||'').split(' ')[0]
+  const coachName = (()=>{ const cm=(chatMessages||[]).filter(m=>m&&m.sender==='coach'&&m.sender_name&&m.sender_name!=='Coach').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)); return cm.length?cm[cm.length-1].sender_name:'Your Coach' })()
   const todayStr = new Date().toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}).toUpperCase()
   const h = new Date().getHours()
   const greeting = `Good ${h<5?'evening':h<12?'morning':h<18?'afternoon':'evening'}, ${firstName}`
@@ -6821,19 +7189,20 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
         <div style={{background:C.bg,minHeight:'100vh',color:C.white,fontSize:14}}>
           <PreviewBanner client={client} onExit={onExit} isRealClient={isRealClient}/>
           <div style={{maxWidth:560, margin:'0 auto', padding:'16px 14px 90px'}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
+            {!guided && (<div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
               <button onClick={()=>setOpenSessionId(null)} style={{background:'none',border:'none',color:C.amber,cursor:'pointer',fontSize:13,fontWeight:600,padding:'6px 0',display:'flex',alignItems:'center',gap:5}}>
                 <Icon name="play" size={13} color={C.amber} style={{transform:'rotate(180deg)'}}/> Back
               </button>
               {sessSkipped(sess)
                 ? <button onClick={()=>unskipSession(sess.id)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Un-skip</button>
                 : !sessDone(sess) && <button onClick={()=>{skipSession(sess.id); setOpenSessionId(null); setTab('sessions')}} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Skip session</button>}
-            </div>
+            </div>)}
             {(()=>{
               const _exs=safeExercises(sess)
               const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
               const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
-              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)}/>
+              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} onExit={()=>setGuided(false)} onFinish={()=>setGuided(false)}/>
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={()=>setGuided(true)}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
@@ -6873,7 +7242,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
                 <span style={{fontSize:18,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{weekPct}%</span>
               </Ring>
               <div style={{minWidth:0}}>
-                <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:3}}>This Week</div>
+                <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:3}}>{weekCardLabel}</div>
                 <div style={{fontSize:13,color:C.white,fontWeight:600}}>{weeklyDone}/{weeklyScheduled} done</div>
                 <div style={{fontSize:11,color:C.faint,marginTop:1}}>{weeklyScheduled-weeklyDone>0?`${weeklyScheduled-weeklyDone} to go`:weeklyScheduled>0?'All done':'No sessions'}</div>
               </div>
@@ -7134,7 +7503,6 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
             <h2 style={{fontSize:22,fontWeight:600,color:C.white,marginBottom:6}}>My Progress</h2>
             <div style={{fontSize:13,color:C.muted}}>{pbs.length} exercise{pbs.length!==1?'s':''} tracked</div>
           </div>
-          <ClientWeightCard clientId={client.id} measurements={measurements} addMeasurement={addMeasurement} units={client.units||'kg'}/>
           {topPBs.length>0 && (
             <div style={{marginBottom:20}}>
               <CLabel icon="trophy" color={C.gold}>Top Lifts</CLabel>
@@ -7152,7 +7520,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
         </>)}
 
         {/* ────── PROFILE ────── */}
-        {tab==='profile' && <ClientProfilePage client={client} updateClient={updateClient} totalDone={totalDone} streak={streak} tracked={pbs.length}/>}
+        {tab==='profile' && <ClientProfilePage client={client} updateClient={updateClient} totalDone={totalDone} streak={streak} tracked={pbs.length} measurements={measurements} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement}/>}
 
         {tab==='chats' && (()=>{
           const myChats = (chats||[]).filter(c=>(c.member_ids||[]).includes(client.id)).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))
@@ -7166,7 +7534,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
                 <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
                   <button onClick={()=>{setChatOpenId(null);setChatDraft('')}} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,color:C.white,cursor:'pointer',padding:'7px 12px',fontSize:13}}>‹ Back</button>
                   <div style={{minWidth:0}}>
-                    <div style={{fontSize:16,fontWeight:700,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{open.type==='group'?open.name:'Your Coach'}</div>
+                    <div style={{fontSize:16,fontWeight:700,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{open.type==='group'?open.name:coachName}</div>
                     {open.type==='group'&&<div style={{fontSize:11,color:C.faint}}>{(open.member_ids||[]).length} members</div>}
                   </div>
                 </div>
@@ -7176,7 +7544,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
                     const mine = m.sender==='client' && (m.sender_id===client.id || !m.sender_id)
                     return (
                       <div key={m.id} style={{alignSelf:mine?'flex-end':'flex-start',maxWidth:'82%'}}>
-                        {open.type==='group'&&!mine&&<div style={{fontSize:10,color:m.sender==='coach'?C.amber:C.c3,fontWeight:700,marginBottom:2,paddingLeft:4}}>{m.sender==='coach'?'Coach':m.sender_name}</div>}
+                        {open.type==='group'&&!mine&&<div style={{fontSize:10,color:m.sender==='coach'?C.amber:C.c3,fontWeight:700,marginBottom:2,paddingLeft:4}}>{m.sender==='coach'?coachName:m.sender_name}</div>}
                         <div style={{background:mine?C.c1:(m.sender==='coach'?`${C.amber}1A`:C.card),color:C.white,border:mine?'none':`1px solid ${m.sender==='coach'?`${C.amber}40`:C.border}`,borderRadius:12,padding:'9px 13px',fontSize:13,lineHeight:1.45}}>{m.text}</div>
                         <div style={{fontSize:9,color:C.faint,marginTop:3,textAlign:mine?'right':'left',padding:'0 4px'}}>{new Date(m.created_at).toLocaleDateString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
                       </div>
@@ -7204,7 +7572,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
                       <Icon name={c.type==='group'?'users':'user'} size={17} color={c.type==='group'?C.c3:C.amber}/>
                     </span>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:14.5,fontWeight:600,color:C.white}}>{c.type==='group'?c.name:'Your Coach'}</div>
+                      <div style={{fontSize:14.5,fontWeight:600,color:C.white}}>{c.type==='group'?c.name:coachName}</div>
                       <div style={{fontSize:12,color:C.faint,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{last?`${last.sender==='client'?'You: ':''}${last.text}`:(c.type==='group'?`${(c.member_ids||[]).length} members`:'Direct message')}</div>
                     </div>
                     {un>0 && <span style={{minWidth:20,height:20,borderRadius:10,background:C.amber,color:C.bg,fontSize:11,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 6px',flexShrink:0}}>{un>9?'9+':un}</span>}
@@ -7295,7 +7663,7 @@ function ChatsPage({ mode, chats, chatMessages, clients, addChat, addChatMessage
     if(r) setActiveId(r.id)
     setCreating(false); setGName(''); setGMembers([]); setGFromGroup('')
   }
-  const send = () => { if(!draft.trim()||!active) return; addChatMessage({chat_id:active.id, sender:'coach', sender_id:'coach', sender_name:'Coach', text:draft.trim()}); setDraft('') }
+  const send = () => { if(!draft.trim()||!active) return; addChatMessage({chat_id:active.id, sender:'coach', sender_id:'coach', sender_name:((JSON.parse(localStorage.getItem('cgee_settings')||'{}').coachName||'').trim()||'Coach'), text:draft.trim()}); setDraft('') }
   const toggleMember = id => setGMembers(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id])
 
   return (
@@ -7431,6 +7799,7 @@ function MainApp({ session, onSignOut }) {
   const [chats,        setChats]        = useState([])
   const [chatMessages, setChatMessages] = useState([])
   const [chatReads,    setChatReads]    = useState([])
+  const [templates,    setTemplates]    = useState([])
   const [loading,  setLoading]  = useState(true)
   const [saving,   setSaving]   = useState(false)
   const [error,    setError]    = useState('')
@@ -7456,7 +7825,7 @@ function MainApp({ session, onSignOut }) {
       try{
         CGEE_TOKEN = token
         await hydrateExReg(token)
-        const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd] = await Promise.all([
+        const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl] = await Promise.all([
           sb.get('clients','select=*',token), sb.get('programs','select=*',token),
           sb.get('program_weeks','select=*',token), sb.get('sessions','select=*',token),
           sb.get('body_measurements','select=*',token), sb.get('client_goals','select=*',token),
@@ -7466,9 +7835,10 @@ function MainApp({ session, onSignOut }) {
           sb.get('chats','select=*',token).catch(()=>[]),
           sb.get('chat_messages','select=*',token).catch(()=>[]),
           sb.get('chat_reads','select=*',token).catch(()=>[]),
+          sb.get('templates','select=*',token).catch(()=>[]),
         ])
         if(!Array.isArray(c)) throw new Error(JSON.stringify(c))
-        setClients(c); setPrograms(p); setWeeks(w); setMeasurements(m||[]); setGoals(g||[]); setFlags(fl||[]); setAnnouncements(Array.isArray(ann)?ann:[]); setMessages(Array.isArray(msgs)?msgs:[]); setChats(Array.isArray(chts)?chts:[]); setChatMessages(Array.isArray(chmsgs)?chmsgs:[]); setChatReads(Array.isArray(chrd)?chrd:[])
+        setClients(c); setPrograms(p); setWeeks(w); setMeasurements(m||[]); setGoals(g||[]); setFlags(fl||[]); setAnnouncements(Array.isArray(ann)?ann:[]); setMessages(Array.isArray(msgs)?msgs:[]); setChats(Array.isArray(chts)?chts:[]); setChatMessages(Array.isArray(chmsgs)?chmsgs:[]); setChatReads(Array.isArray(chrd)?chrd:[]); setTemplates(Array.isArray(tpl)?tpl:[])
         // Parse exercises JSON and auto-convert any lbs values
         const loadedSessions = (s||[]).map(sess=>({
           ...sess,
@@ -7525,6 +7895,9 @@ function MainApp({ session, onSignOut }) {
   const markChatRead = (chatId,viewerId)=>{ const at=new Date().toISOString(); const tmp='tmp-'+chatId+'-'+viewerId; const ex=chatReads.find(x=>x.chat_id===chatId&&x.viewer_id===viewerId); if(ex){ setChatReads(p=>p.map(r=>r.id===ex.id?{...r,last_read_at:at}:r)); if(!String(ex.id).startsWith('tmp-')) sb.patch('chat_reads',ex.id,{last_read_at:at},token).catch(e=>setError(e.message)) } else { setChatReads(p=>[...p,{id:tmp,chat_id:chatId,viewer_id:viewerId,last_read_at:at}]); sb.post('chat_reads',{chat_id:chatId,viewer_id:viewerId,last_read_at:at,created_at:at},token).then(r=>{ if(r) setChatReads(p=>p.map(x=>x.id===tmp?r:x)) }).catch(e=>setError(e.message)) } }
 
   const addClient    = (d) => wrap(async()=>{ const r=await sb.post('clients',d,token); setClients(p=>[...p,r]); return r })
+  const addTemplate    = (t) => wrap(async()=>{ const r=await sb.post('templates',t,token); setTemplates(p=>[...p,r]); return r })
+  const deleteTemplate = (id) => { setTemplates(p=>p.filter(t=>t.id!==id)); sb.del('templates',id,token).catch(e=>setError(e.message)) }
+  const updateTemplate = (id,d) => { setTemplates(p=>p.map(t=>t.id===id?{...t,...d}:t)); sb.patch('templates',id,d,token).catch(e=>setError(e.message)) }
   const updateClient = (id,d) => { setClients(p=>p.map(c=>c.id===id?{...c,...d}:c)); sb.patch('clients',id,d,token).catch(e=>setError(e.message)) }
   const deleteClient = (id) => { if(!window.confirm('Delete this client and all their data?')) return; setClients(p=>p.filter(c=>c.id!==id)); sb.del('clients',id,token).catch(e=>setError(e.message)) }
 
@@ -7639,7 +8012,7 @@ function MainApp({ session, onSignOut }) {
         messages={messages.filter(m=>m.client_id===previewClientId)}
         addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
         chats={chats.filter(c=>(c.member_ids||[]).includes(previewClientId))}
-        chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement}
+        chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement}
         chatUnread={(id)=>chatUnread(id,previewClientId)} markChatRead={(id)=>markChatRead(id,previewClientId)}
         updateSession={updateSession}
         onExit={()=>setPreviewClientId(null)}
@@ -7663,7 +8036,7 @@ function MainApp({ session, onSignOut }) {
       messages={messages.filter(m=>m.client_id===loggedInClient.id)}
       addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
       chats={chats.filter(c=>(c.member_ids||[]).includes(loggedInClient.id))}
-      chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement}
+      chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement}
       chatUnread={(id)=>chatUnread(id,loggedInClient.id)} markChatRead={(id)=>markChatRead(id,loggedInClient.id)}
       updateSession={updateSession}
       onExit={signOutClient}
@@ -7699,13 +8072,13 @@ function MainApp({ session, onSignOut }) {
             {nav.view==='clients'    && <ClientsView {...props}/>}
             {nav.view==='client'     && <ClientDashboard {...props} clientId={nav.clientId}/>}
             {nav.view==='editclient' && <ClientsView {...props}/>}
-            {nav.view==='program'    && <ProgramDetail {...props} programId={nav.programId} clientId={nav.clientId}/>}
-            {nav.view==='session'    && <SessionDetail {...props} sessionId={nav.sessionId} programId={nav.programId} clientId={nav.clientId}/>}
+            {nav.view==='program'    && <ProgramDetail {...props} programId={nav.programId} clientId={nav.clientId} addTemplate={addTemplate}/>}
+            {nav.view==='session'    && <SessionDetail {...props} sessionId={nav.sessionId} programId={nav.programId} clientId={nav.clientId} addTemplate={addTemplate}/>}
             {nav.view==='library'    && <LibraryView sessions={sessions} av={analyticsVersion}/>}
             {nav.view==='cleanup'    && <ExerciseCleanup sessions={sessions} updateSession={props.updateSession} mergeSession={mergeSession} saving={saving}/>}
             {nav.view==='import'     && <ImportView {...props}/>}
             {nav.view==='calendar'   && <CalendarView sessions={sessions} weeks={weeks} programs={programs} clients={clients} go={go} token={token}/>}
-            {['templates','templates_program','templates_session','templates_scheme','templates_labels','name_convention'].includes(nav.view) && <TemplatesView sessions={sessions} programs={programs} weeks={weeks} clients={clients} addProgram={props.addProgram} addWeek={props.addWeek} addSession={props.addSession} go={go} initialTab={nav.view==='templates_session'?'session':nav.view==='templates_scheme'?'rep_scheme':nav.view==='templates_labels'?'label':'program'}/>}
+            {['templates','templates_program','templates_session','templates_scheme','templates_labels','name_convention'].includes(nav.view) && <TemplatesView sessions={sessions} programs={programs} weeks={weeks} clients={clients} addProgram={props.addProgram} addWeek={props.addWeek} addSession={props.addSession} go={go} templates={templates} addTemplate={addTemplate} deleteTemplate={deleteTemplate} updateTemplate={updateTemplate} initialTab={nav.view==='templates_session'?'session':nav.view==='templates_scheme'?'rep_scheme':nav.view==='templates_labels'?'label':'program'}/>}
             {nav.view==='compliance'          && <CompliancePage {...props}/>}
             {nav.view==='alerts'               && <AlertsPage {...props}/>}
             {nav.view==='programs_list'        && <ProgramsListPage {...props}/>}
