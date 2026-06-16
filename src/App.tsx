@@ -346,14 +346,17 @@ const safeExercises = (sess) => {
 // count as done without requiring weight entry
 
 
-const setIsDone = ls => !!ls && (ls.manualDone===true || ls.confirmed===true || [ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
+const setIsDone = ls => !!ls && (ls.manualDone===true || ls.confirmed===true || [ls.completedReps,ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
+function fmtN(v){ const m=String(v==null?'':v); return /^-?\d+(\.\d+)?$/.test(m)?String(parseFloat(m)):m }
+function wtDisplay(ls){ if(!ls) return {bw:true,text:'BW'}; const band=ls.bandColour&&String(ls.bandColour).trim(); if(band) return {band:true,text:band}; const L=ls.completedLoad==null?'':String(ls.completedLoad).trim(); if(L!==''&&L!=='-'&&L.toLowerCase()!=='x'){ if(/^-?\d+(\.\d+)?$/.test(L)) return {kg:true,text:fmtN(L)}; return {raw:true,text:L} } return {bw:true,text:'BW'} }
+function sessionDoneStats(sess){ const exs=safeExercises(sess).filter(e=>!e.isWarmup); let total=0,done=0; exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=ex.force_complete?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); total+=p; done+=d }); return {done,total} }
+function rollupPct(list){ let t=0,d=0; (list||[]).forEach(s=>{ const st=sessionDoneStats(s); t+=st.total; d+=st.done }); return t>0?Math.round(d/t*100):0 }
 
 function computeSessionStatus(sess) {
   // Manual overrides take priority over computed status
   if(sess?.status === 'skipped')           return 'skipped'
   if(sess?.status === 'manual_complete')   return 'complete'
   if(sess?.status === 'manual_incomplete') return 'not_started'
-  if(sess?.status === 'complete')          return 'complete'  // stored completion (imports, finished live sessions, coach toggle) is authoritative
   const exs = safeExercises(sess).filter(e => !e.isWarmup)
   if(!exs.length) return sess?.status || 'not_started'
   let totalPrescribed = 0, totalDone = 0
@@ -378,7 +381,7 @@ const STATUS = {
   skipped:     { label:'Skipped',     color:'#64748B' },
 }
 function getSessionPct(sess) {
-  if(sess?.status === 'complete' || sess?.status === 'manual_complete') return 100
+  if(sess?.status === 'manual_complete') return 100
   const exs = safeExercises(sess).filter(e=>!e.isWarmup)
   const prescribed = exs.reduce((a,e)=>a+(parseInt(e.sets)||1),0)
   const done = exs.reduce((a,e)=>{
@@ -425,11 +428,17 @@ function toDateKey(d) {
 }
 
 // ─── GROUP COLOURS ────────────────────────────────────────────────────────────
-const GC = { A:C.amber, B:'#3B82F6', C:'#22C55E', D:'#A855F7', E:'#EC4899', F:'#06B6D4', R:'#14B8A6', G:'#14B8A6' }
-function groupColor(blockLabel) {
-  const l = (blockLabel||'').replace(/\d+/g,'').toUpperCase()
-  return GC[l] || C.muted
+function _hslHex(h,s,l){ h=((h%360)+360)%360; const c=(1-Math.abs(2*l-1))*s, x=c*(1-Math.abs((h/60)%2-1)), m=l-c/2; let r=0,g=0,b=0; if(h<60){r=c;g=x}else if(h<120){r=x;g=c}else if(h<180){g=c;b=x}else if(h<240){g=x;b=c}else if(h<300){r=x;b=c}else{r=c;b=x} const t=v=>Math.round((v+m)*255).toString(16).padStart(2,'0'); return '#'+t(r)+t(g)+t(b) }
+function letterColor(L){ if(!L) return C.muted; L=String(L).toUpperCase(); if(L==='W'||L==='P') return '#94A3B8'; if(L==='R') return '#14B8A6'; const i=L.charCodeAt(0)-65; if(i<0||i>25) return C.muted; return _hslHex(200+i*137.508,0.70,0.60) }
+function groupColor(blockLabel, isWarmup) {
+  if(isWarmup) return '#94A3B8'
+  const raw=(blockLabel||'').replace(/[^A-Za-z]/g,'')
+  if(!raw) return C.muted
+  if(/^warm/i.test(raw)) return '#94A3B8'
+  return letterColor(raw.charAt(0))
 }
+function getRecentColors(){ try{ return JSON.parse(localStorage.getItem('cgee_recent_colors')||'[]') }catch{ return [] } }
+function pushRecentColor(c){ if(!c) return; try{ let a=getRecentColors().filter(x=>String(x).toLowerCase()!==String(c).toLowerCase()); a.unshift(c); a=a.slice(0,8); localStorage.setItem('cgee_recent_colors',JSON.stringify(a)) }catch{} }
 const fmtRep = (v) => { const s=String(v==null?'':v).trim(); const m=/^(\d+)\.0+$/.exec(s); return m?m[1]:s }
 const collapseReps = (v) => {
   const parts = String(v==null?'':v).split(/[\/,]/).map(x=>fmtRep(x)).filter(x=>x!=='')
@@ -1572,7 +1581,7 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
   const PCard = ({ prog }) => {
     const ps   = sessions.filter(s=>s.program_id===prog.id)
     const done = ps.filter(s=>computeSessionStatus(s)==='complete').length
-    const pct  = ps.length>0?Math.round(done/ps.length*100):0
+    const pct  = rollupPct(ps)
     return (
       <Card style={{padding:'13px 16px',opacity:prog.status==='complete'?0.85:1}}>
         <Row style={{alignItems:'center'}}>
@@ -1582,7 +1591,7 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
               <Tag v={prog.status==='current'?'Current':'Complete'} color={prog.status==='current'?C.amber:C.green}/>
               {prog.phase&&<Tag v={prog.phase} color={C.c2} small/>}
             </Row>
-            <span style={{fontSize:12,color:C.muted}}>{prog.goal||'No goal'} · {ps.length} sessions · {done} done</span>
+            <span style={{fontSize:12,color:C.muted}}>{prog.goal||'No goal'} · {ps.length} sessions · {done} done · <span style={{color:trafficColor(pct),fontWeight:700}}>{pct}%</span></span>
             {ps.length>0&&<ProgressBar value={pct}/>}
           </div>
           <Row style={{gap:5}}>
@@ -1868,9 +1877,9 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
           {progWeeks.map(wk=>{
             const wSess=sessions.filter(s=>s.week_id===wk.id)
             const wDone=wSess.filter(s=>computeSessionStatus(s)==='complete').length
-            const wPct=wSess.length>0?Math.round(wDone/wSess.length*100):0
+            const wPct=rollupPct(wSess)
             const isActive=(activeWeekId||progWeeks[0]?.id)===wk.id
-            const wColor=wPct===100?C.green:wPct>0?C.orange:C.muted
+            const wColor=wSess.length?trafficColor(wPct):C.muted
             return(
               <button key={wk.id} onClick={()=>setActiveWeekId(wk.id)}
                 style={{padding:'6px 16px',borderRadius:7,border:`2px solid ${isActive?C.amber:C.border}`,
@@ -1878,7 +1887,7 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
                   color:isActive?C.amber:C.muted,cursor:'pointer',fontSize:12,fontWeight:isActive?700:500,
                   display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:60}}>
                 <span>Wk {wk.week_number}</span>
-                <span style={{fontSize:9,color:wColor,fontWeight:700}}>{wPct===100?'✓':wPct>0?`${wPct}%`:`${wSess.length}s`}</span>
+                <span style={{fontSize:9,color:wColor,fontWeight:700}}>{wSess.length>0?(wPct===100?'✓':`${wPct}%`):'—'}</span>
               </button>
             )
           })}
@@ -1909,13 +1918,14 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
         if(!wk) return null
         const weekSess = sessions.filter(s=>s.week_id===wk.id)
         const done = weekSess.filter(s=>computeSessionStatus(s)==='complete').length
+        const wkPct = rollupPct(weekSess)
         return(
           <div>
             <Row style={{alignItems:'center',marginBottom:10}}>
               <Row style={{alignItems:'center',gap:8,flex:1}}>
                 <span style={{fontWeight:700,color:C.white}}>Week {wk.week_number}</span>
                 {wk.phase&&<Tag v={wk.phase} color={C.c2}/>}
-                <span style={{fontSize:12,color:C.muted}}>{done}/{weekSess.length} done</span>
+                <span style={{fontSize:12,color:C.muted}}>{done}/{weekSess.length} done · <span style={{color:trafficColor(wkPct),fontWeight:700}}>{wkPct}%</span></span>
               </Row>
               <Row style={{gap:5,flexWrap:'wrap',justifyContent:'flex-end'}}>
                 {addingSessFor!==wk.id&&<Btn label="+ Session" small onClick={()=>{setAddingSessFor(wk.id);setSF({name:'',session_type:'Strength',date_label:'',notes:''})}}/>}
@@ -1990,11 +2000,9 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
                             {sessDate&&<span style={{fontSize:10,color:C.c3}}>{sessDate.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})}</span>}
                           </Row>
                           {(()=>{
-                            const p2=mainEx.reduce((a,e)=>a+(parseInt(e.sets)||1),0)
-                            const d2=mainEx.reduce((a,e)=>a+(e.loggedSets||[]).filter(setIsDone).length,0)
-                            if(sessStatus==='complete') return <span style={{fontSize:11,color:C.green,fontWeight:600}}>✓ Complete</span>
-                            if(sessStatus==='in_progress'){const pct2=p2>0?Math.round(d2/p2*100):0;return <span style={{fontSize:11,color:C.orange}}>{pct2}% · {d2}/{p2} sets</span>}
-                            return <span style={{fontSize:11,color:C.faint}}>{mainEx.length} exercises</span>
+                            const st=sessionDoneStats(sess); const pct2=st.total>0?Math.round(st.done/st.total*100):0
+                            if(st.total===0) return <span style={{fontSize:11,color:C.faint}}>{mainEx.length} exercises</span>
+                            return <span style={{fontSize:11,color:trafficColor(pct2),fontWeight:600}}>{pct2===100?'✓ Complete':`${pct2}% · ${st.done}/${st.total} sets`}</span>
                           })()}
                         </div>
                         <Row style={{gap:4,flexShrink:0}}>
@@ -2013,7 +2021,7 @@ function ProgramDetail({ programId, clientId, clients, programs, updateProgram, 
                     {/* Compact exercise preview */}
                     {mainEx.slice(0,6).map((ex,xi)=>(
                       <div key={ex.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 14px',borderBottom:xi<Math.min(mainEx.length-1,5)?`1px solid ${C.border}40`:'none',background:xi%2===0?'transparent':`${C.white}02`}}>
-                        {ex.blockLabel&&<span style={{minWidth:24,height:18,borderRadius:3,background:`${groupColor(ex.blockLabel)}20`,color:groupColor(ex.blockLabel),fontSize:9,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{ex.blockLabel}</span>}
+                        {ex.blockLabel&&<span style={{minWidth:24,height:18,borderRadius:3,background:`${groupColor(ex.blockLabel,ex.isWarmup)}20`,color:groupColor(ex.blockLabel,ex.isWarmup),fontSize:9,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{ex.blockLabel}</span>}
                         <span style={{flex:1,fontSize:11,color:C.dim,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ex.name}</span>
                         <span style={{fontSize:10,color:C.faint,whiteSpace:'nowrap'}}>{getPrescription(ex)}</span>
                       </div>
@@ -2067,7 +2075,7 @@ const deriveTargets = (form) => {
   })
   return out
 }
-function TargetTable({ form, setForm }) {
+function TargetTable({ form, setForm, logged=[], onEditLogged }) {
   const cols = (form.targetCols&&form.targetCols.length)?form.targetCols:['reps']
   const n = Math.max(1, parseInt(form.sets)||1)
   const rows = Array.from({length:n},(_,i)=>(form.targets&&form.targets[i])||{})
@@ -2121,6 +2129,7 @@ function TargetTable({ form, setForm }) {
             {cols.length>1&&<button type="button" onClick={()=>removeCol(k)} title="Remove target" style={{background:'none',border:'none',color:C.faint,cursor:'pointer',fontSize:12,padding:0,lineHeight:1}}>×</button>}
           </div>
         ))}
+        {logged.length>0&&<span style={{minWidth:96,flexShrink:0,fontSize:9,fontWeight:700,color:C.green,textTransform:'uppercase',letterSpacing:'0.06em',textAlign:'center'}}>Logged</span>}
         <span style={{width:18,flexShrink:0}}/>
       </div>
       {rows.map((r,i)=>(
@@ -2129,6 +2138,19 @@ function TargetTable({ form, setForm }) {
           {cols.map(k=>(
             <input key={k} value={(r&&r[k])||''} onChange={e=>setCell(i,k,e.target.value)} placeholder={TARGET_PH[k]||''} style={{flex:1,minWidth:0,width:'100%',background:C.ink,border:`1px solid ${C.border}`,borderRadius:6,padding:'7px 8px',color:C.white,fontSize:13,outline:'none',boxSizing:'border-box'}}/>
           ))}
+          {logged.length>0&&(()=>{
+            const ls=(logged||[]).find(x=>x.setNumber===i+1)
+            if(!ls) return <span style={{minWidth:96,flexShrink:0}}/>
+            const _work=!!(ls.completedLoad||ls.completedReps||ls.completedTime||ls.completedDistance||ls.speed||ls.rpm||ls.power||ls.energy||ls.hr||ls.bandColour)
+            const _skp=ls.skipped&&!_work
+            const w=wtDisplay(ls)
+            const _pr=(r&&r.reps!=null)?String(r.reps):''
+            const _prn=(String(_pr).match(/\d+(\.\d+)?/g)||[]).map(parseFloat)
+            const _an=(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')?parseFloat(String(ls.completedReps)):null
+            const _flag=_work&&!_skp&&_an!=null&&_prn.length>0&&(_prn.length>=2?(_an<Math.min(..._prn)||_an>Math.max(..._prn)):_an!==_prn[0])
+            const wtxt=_skp?'skip':w.band?(w.text+' band'):w.bw?'BW':w.kg?(w.text+'kg'):w.text
+            return <span onClick={()=>onEditLogged&&onEditLogged(ls)} title={_flag?`Logged ${fmtN(ls.completedReps)} reps — prescribed ${_pr}`:'Edit logged set'} style={{minWidth:118,flexShrink:0,textAlign:'right',fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:16,background:'transparent',border:_flag?`1px solid ${C.amber}`:'none',borderRadius:6,padding:'4px 8px',color:_skp?C.orange:(w.band?C.purple:w.bw?C.green:C.white),whiteSpace:'nowrap',cursor:'pointer',textTransform:w.band?'capitalize':'none'}}>{wtxt}{_flag?' ⚠':''}</span>
+          })()}
           <button type="button" onClick={()=>removeSet(i)} disabled={n<=1} title="Remove set" style={{width:18,flexShrink:0,background:'none',border:'none',color:n<=1?C.faint:C.muted,cursor:n<=1?'default':'pointer',fontSize:14,padding:0}}>×</button>
         </div>
       ))}
@@ -2225,11 +2247,12 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
 
   // ── Compact exercise row with click-to-expand inline editor ──────────────
   const ExRow = ({ ex }) => {
-    const gc = ex.labelColor || groupColor(ex.blockLabel)
+    const gc = ex.labelColor || groupColor(ex.blockLabel, ex.isWarmup)
     const isExpanded = editExId === ex.id
     const doneSets = (ex.loggedSets||[]).filter(setIsDone).length
     const totalSets = parseInt(ex.sets)||1
     const allDone = !ex.isWarmup && doneSets >= totalSets && totalSets > 0
+    const skippedSets = (ex.loggedSets||[]).filter(s=>s.skipped && !setIsDone(s)).length
     const prescription = getPrescription(ex)
 
     const openEdit = () => {
@@ -2281,10 +2304,12 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
             <span style={{fontSize:11,color:C.muted,whiteSpace:'nowrap',flexShrink:0,marginRight:4}}>{prescription}</span>
           )}
 
-          {!ex.isWarmup&&doneSets>0&&(
-            <span style={{fontSize:9,fontWeight:700,color:allDone?C.green:C.orange,background:allDone?`${C.green}18`:`${C.orange}18`,border:`1px solid ${allDone?C.green:C.orange}35`,borderRadius:4,padding:'1px 6px',flexShrink:0,whiteSpace:'nowrap'}}>
-              {allDone?'✓ ':''}{doneSets}/{totalSets}
-            </span>
+          {!ex.isWarmup&&(
+            doneSets>0
+              ? <span style={{fontSize:9,fontWeight:700,color:allDone?C.green:C.orange,background:allDone?`${C.green}18`:`${C.orange}18`,border:`1px solid ${allDone?C.green:C.orange}35`,borderRadius:4,padding:'1px 6px',flexShrink:0,whiteSpace:'nowrap'}}>{allDone?'✓ ':''}{doneSets}/{totalSets}</span>
+              : skippedSets>0
+                ? <span style={{fontSize:9,fontWeight:700,color:'#64748B',background:'#64748B22',border:'1px solid #64748B55',borderRadius:4,padding:'1px 6px',flexShrink:0,whiteSpace:'nowrap'}}>Skipped</span>
+                : <span style={{fontSize:9,fontWeight:700,color:C.red,background:`${C.red}15`,border:`1px solid ${C.red}35`,borderRadius:4,padding:'1px 6px',flexShrink:0,whiteSpace:'nowrap'}}>Incomplete</span>
           )}
 
           {!ex.isWarmup&&<button onClick={e=>{e.stopPropagation(); setHistoryEx(ex.name)}} title="History" style={{background:'none',border:'none',cursor:'pointer',padding:2,display:'flex',flexShrink:0}}><Icon name="clock" size={13} color={C.faint}/></button>}
@@ -2297,6 +2322,40 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
           </div>
         )}
 
+        {!isExpanded && !ex.isWarmup && doneSets>0 && (
+          <div style={{padding:'0 12px 9px 34px'}}>
+            <table style={{width:'100%',borderCollapse:'collapse'}}><tbody>
+              <tr>
+                <td style={{fontSize:8.5,letterSpacing:'0.06em',color:C.faint,fontWeight:700,padding:'2px 8px 3px 0',width:30}}>SET</td>
+                <td style={{fontSize:8.5,letterSpacing:'0.06em',color:C.faint,fontWeight:700,padding:'2px 8px 3px'}}>REPS</td>
+                <td style={{fontSize:8.5,letterSpacing:'0.06em',color:C.green,fontWeight:700,padding:'2px 0 3px 8px',textAlign:'right'}}>WEIGHT</td>
+              </tr>
+              {(ex.loggedSets||[]).filter(setIsDone).slice().sort((a,b)=>(a.setNumber||0)-(b.setNumber||0)).map((ls,li)=>{
+                const sn=ls.setNumber||li+1
+                const _pr=(Array.isArray(ex.targets)&&ex.targets[sn-1]&&ex.targets[sn-1].reps!=null)?String(ex.targets[sn-1].reps):(ex.reps!=null?String(ex.reps).split('/')[Math.min(sn-1,String(ex.reps).split('/').length-1)]:'')
+                const _prn=(String(_pr).match(/\d+(\.\d+)?/g)||[]).map(parseFloat)
+                const _an=(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')?parseFloat(String(ls.completedReps)):null
+                const _flag=_an!=null&&_prn.length>0&&(_prn.length>=2?(_an<Math.min(..._prn)||_an>Math.max(..._prn)):_an!==_prn[0])
+                const w=wtDisplay(ls)
+                return (
+                  <tr key={ls.id||li} onClick={e=>{e.stopPropagation();openEdit()}} style={{cursor:'pointer'}}>
+                    <td style={{fontSize:11,color:C.dim,padding:'3px 8px 3px 0',borderTop:`1px solid ${C.border}30`}}>{sn}</td>
+                    <td style={{fontSize:12.5,fontFamily:'Space Grotesk,sans-serif',color:_flag?C.amber:'rgba(255,255,255,0.72)',padding:'3px 8px',borderTop:`1px solid ${C.border}30`}}>{(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')?fmtN(ls.completedReps):'—'}</td>
+                    <td style={{textAlign:'right',padding:'3px 0 3px 8px',borderTop:`1px solid ${C.border}30`}}>
+                      {w.band
+                        ? <span style={{color:C.purple,fontWeight:700,fontSize:13,textTransform:'capitalize'}}>{w.text} band</span>
+                        : w.bw
+                          ? <span style={{color:C.green,fontWeight:600,fontSize:13}}>BW</span>
+                          : w.kg
+                            ? <span style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:15,color:C.white}}>{w.text}<span style={{fontSize:11,color:C.muted,fontWeight:500}}>kg</span></span>
+                            : <span style={{fontWeight:700,fontSize:13,color:C.white}}>{w.text}</span>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody></table>
+          </div>
+        )}
         {/* Expanded inline editor */}
         {isExpanded&&(
           <div style={{borderTop:`1px solid ${C.border}40`,padding:'10px 12px',background:'transparent'}}>
@@ -2304,7 +2363,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
               <TI label="Exercise Name" value={editExF.name||''} onChange={v=>setEditExF(p=>({...p,name:v}))} placeholder="Exercise name"/>
               <TI label="Block Label" value={editExF.blockLabel||''} onChange={v=>setEditExF(p=>({...p,blockLabel:v}))} placeholder="A1, B2, R1…"/>
             </G2>
-            <TargetTable form={editExF} setForm={setEditExF}/>
+            <TargetTable form={editExF} setForm={setEditExF} logged={ex.loggedSets||[]} onEditLogged={(ls)=>{setAddSetFor(ex.id);setSetF({completedLoad:ls.completedLoad||'',completedReps:ls.completedReps||'',rpe:ls.rpe||'',notes:ls.notes||'',skipped:!!ls.skipped,bandColour:ls.bandColour||'',_editId:ls.id})}}/>
             <button type="button" onClick={()=>setEditAdv(v=>!v)} style={{display:'flex',alignItems:'center',gap:6,background:'none',border:'none',color:C.muted,fontSize:12,fontWeight:600,cursor:'pointer',padding:'4px 0',marginBottom:6}}><Icon name="sliders" size={13} color={C.muted}/>Advanced {editAdv?'▲':'▼'}</button>
             {editAdv && (<>
               <div style={{marginBottom:8}}>
@@ -2316,9 +2375,21 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                         border:`2px solid ${editExF.labelColor===col?C.white:'transparent'}`,
                         transition:'border-color 0.1s',flexShrink:0}}/>
                   ))}
+                  <label title="Custom colour" style={{width:22,height:22,borderRadius:'50%',overflow:'hidden',cursor:'pointer',flexShrink:0,border:`1px solid ${C.border}`,position:'relative',display:'inline-block'}}>
+                    <span style={{position:'absolute',inset:0,background:'conic-gradient(red,#f80,#ff0,#0f0,#0ff,#08f,#80f,#f0f,red)'}}/>
+                    <input type="color" value={editExF.labelColor||'#3B82F6'} onChange={e=>{setEditExF(p=>({...p,labelColor:e.target.value}));pushRecentColor(e.target.value)}} style={{position:'absolute',inset:'-4px',opacity:0,cursor:'pointer',border:'none',padding:0,width:'140%',height:'140%'}}/>
+                  </label>
                   {editExF.labelColor&&<button onClick={()=>setEditExF(p=>({...p,labelColor:''}))}
                     style={{background:'none',border:`1px solid ${C.border}`,borderRadius:4,color:C.faint,fontSize:10,cursor:'pointer',padding:'2px 6px'}}>reset</button>}
                 </div>
+                {getRecentColors().length>0&&(
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:7,alignItems:'center'}}>
+                    <span style={{fontSize:9,color:C.faint,marginRight:2}}>Recent</span>
+                    {getRecentColors().map(col=>(
+                      <div key={'rc'+col} onClick={()=>setEditExF(p=>({...p,labelColor:col}))} style={{width:18,height:18,borderRadius:'50%',background:col,cursor:'pointer',border:`2px solid ${editExF.labelColor===col?C.white:'transparent'}`,flexShrink:0}}/>
+                    ))}
+                  </div>
+                )}
               </div>
             <G3 style={{marginBottom:8}}>
               <TI label="Tempo" value={editExF.tempo||''} onChange={v=>setEditExF(p=>({...p,tempo:v}))} placeholder="3010"/>
@@ -2364,11 +2435,11 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
             </Row>
 
             {/* Logged sets */}
-            {!ex.isWarmup&&(ex.loggedSets||[]).length>0&&(
+            {!ex.isWarmup&&(ex.loggedSets||[]).filter(ls=>ls.setNumber>Math.max(1,parseInt(editExF.sets)||1)).length>0&&(
               <div style={{borderTop:`1px solid ${C.border}`,paddingTop:8,marginBottom:8}}>
-                <div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Logged Sets — click to edit</div>
+                <div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Extra logged sets — click to edit</div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
-                  {(ex.loggedSets||[]).map(ls=>{
+                  {(ex.loggedSets||[]).filter(ls=>ls.setNumber>Math.max(1,parseInt(editExF.sets)||1)).map(ls=>{
                     const _work = !!(ls.completedLoad||ls.completedReps||ls.completedTime||ls.completedDistance||ls.speed||ls.rpm||ls.power||ls.energy||ls.hr||ls.bandColour)
                     const _skp = ls.skipped && !_work
                     const isNoWeight = !ls.completedLoad && !_skp
@@ -2376,13 +2447,17 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                     const label = _skp
                       ? `S${ls.setNumber} skip`
                       : isNoWeight
-                        ? `S${ls.setNumber} BW${ls.completedReps?` ×${ls.completedReps}`:''}`
-                        : [ls.completedLoad,ls.completedReps?`×${ls.completedReps}`:'',ls.rpe?`@${ls.rpe}`:''].filter(Boolean).join(' ')||'—'
+                        ? `S${ls.setNumber} BW${ls.completedReps?` ×${fmtN(ls.completedReps)}`:''}`
+                        : [ls.completedLoad,ls.completedReps?`×${fmtN(ls.completedReps)}`:'',ls.rpe?`@${ls.rpe}`:''].filter(Boolean).join(' ')||'—'
+                    const _pr = (Array.isArray(ex.targets)&&ex.targets[ls.setNumber-1]&&ex.targets[ls.setNumber-1].reps!=null) ? String(ex.targets[ls.setNumber-1].reps) : (ex.reps!=null?String(ex.reps).split('/')[Math.min(ls.setNumber-1, String(ex.reps).split('/').length-1)]:'')
+                    const _prn = (String(_pr).match(/\d+(\.\d+)?/g)||[]).map(parseFloat)
+                    const _an = (ls.completedReps!=null&&String(ls.completedReps).trim()!=='') ? parseFloat(String(ls.completedReps)) : null
+                    const _repsFlag = _work&&!_skp&&_an!=null&&_prn.length>0 && (_prn.length>=2 ? (_an<Math.min(..._prn)||_an>Math.max(..._prn)) : _an!==_prn[0])
                     return(
-                      <span key={ls.id}
+                      <span key={ls.id} title={_repsFlag?`Logged ${fmtN(ls.completedReps)} reps — prescribed ${_pr}`:undefined}
                         onClick={()=>{setAddSetFor(ex.id);setSetF({completedLoad:ls.completedLoad||'',completedReps:ls.completedReps||'',rpe:ls.rpe||'',notes:ls.notes||'',skipped:!!ls.skipped,bandColour:ls.bandColour||'',_editId:ls.id})}}
-                        style={{fontSize:11,background:`${color}18`,border:`1px solid ${color}40`,borderRadius:5,padding:'2px 8px',color,fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}}>
-                        {label}
+                        style={{fontSize:11,background:`${color}18`,border:`1px solid ${_repsFlag?C.amber:`${color}40`}`,borderRadius:5,padding:'2px 8px',color,fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}}>
+                        {label}{_repsFlag?<span style={{color:C.amber}}> {'⚠'}</span>:''}
                       </span>
                     )
                   })}
@@ -2415,7 +2490,9 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                 <Row style={{gap:6}}>
                   <Btn label={setF._editId?'Update Set':'Log Set'} small onClick={()=>{
                     const existNum = setF._editId?(ex.loggedSets||[]).find(s=>s.id===setF._editId)?.setNumber||1:((ex.loggedSets||[]).length+1)
-                    const newSet={id:setF._editId||uid(),setNumber:existNum,...setF,skipped:!setF.completedLoad&&!setF.completedReps&&!setF.rpe&&!setF.notes&&!setF.bandColour,_editId:undefined}
+                    const _skip=!!setF.skipped
+                    const newSet={id:setF._editId||uid(),setNumber:existNum,...setF,skipped:_skip,_editId:undefined}
+                    if(_skip){ newSet.completedLoad='';newSet.completedReps='';newSet.rpe='';newSet.rir='';newSet.bandColour='' }
                     const newSets = setF._editId
                       ? (ex.loggedSets||[]).map(s=>s.id===setF._editId?newSet:s)
                       : [...(ex.loggedSets||[]),newSet]
@@ -2534,6 +2611,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
           {ex.videoUrl&&<a href={ex.videoUrl} target="_blank" rel="noreferrer" style={{flexShrink:0,marginTop:1}}><Icon name="play" size={16} color={C.c3}/></a>}
           {ex.notes&&<button onClick={()=>setNoteOpenId(noteOpen?null:ex.id)} style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:noteOpen?`${C.amber}1A`:C.card,border:`1px solid ${noteOpen?C.amber:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:noteOpen?C.amber:C.muted,fontSize:11,fontWeight:600}}><Icon name="fileText" size={12} color={noteOpen?C.amber:C.muted}/>Note</button>}
           <button onClick={()=>{setAthleteNoteEx(athleteNoteEx===ex.id?null:ex.id);setAthleteNoteDraft('')}} title="Leave your coach a note" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:athleteNoteEx===ex.id?`${C.c1}22`:C.card,border:`1px solid ${athleteNoteEx===ex.id?C.c2:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:athleteNoteEx===ex.id?C.c3:C.muted,fontSize:11,fontWeight:600}}><Icon name="message" size={12} color={athleteNoteEx===ex.id?C.c3:C.muted}/></button>
+          {!ex.isWarmup&&<button onClick={()=>setHistoryEx(ex.name)} title="History — past weights" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:C.muted,fontSize:11,fontWeight:600}}><Icon name="clock" size={12} color={C.muted}/></button>}
         </div>
         {noteOpen&&ex.notes&&<div style={{background:`${C.amber}0D`,border:`1px solid ${C.amber}33`,borderRadius:9,padding:'10px 12px',marginBottom:10,fontSize:13,color:C.white,lineHeight:1.5,fontStyle:'italic'}}>{ex.notes}</div>}
         {athleteNoteEx===ex.id&&(
@@ -2595,7 +2673,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:14}}>
           {cg.map((g,gi)=>{
-            const col=g.exs[0].labelColor||groupColor(g.exs[0].blockLabel)||C.amber
+            const col=g.exs[0].labelColor||groupColor(g.exs[0].blockLabel,g.exs[0].isWarmup)||C.amber
             const isMulti=g.exs.length>1
             const sectionName=g.exs[0].sectionName||(g.exs[0].isWarmup?'Movement Prep':groupTypeName(g.exs.length))
             return (
@@ -2610,9 +2688,9 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
             )
           })}
         </div>
-        <button onClick={()=>{ updateSession(sess.id,{status:'completed',completed_at:new Date().toISOString()}); go&&go('client') }}
-          style={{marginTop:18,width:'100%',background:done?C.card:C.amber,color:done?C.green:C.bg,border:done?`1px solid ${C.green}55`:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:14.5,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.03em'}}>
-          <Icon name="check" size={17} color={done?C.green:C.bg}/>Finish session
+        <button onClick={()=>{ if(done){ updateSession(sess.id,{status:'manual_incomplete',completed_at:null}) } else { updateSession(sess.id,{status:'completed',completed_at:new Date().toISOString()}); go&&go('client') } }}
+          style={{marginTop:18,width:'100%',background:done?'transparent':C.amber,color:done?C.muted:C.bg,border:done?`1px solid ${C.border}`:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:14.5,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.03em'}}>
+          <Icon name={done?'refresh':'check'} size={17} color={done?C.muted:C.bg}/>{done?'Reopen — mark incomplete':'Finish session'}
         </button>
         <div style={{marginTop:16}}>
           <SessionMessageBox sessionId={sessionId} clientId={clientId} programId={programId} weekId={sess?.week_id} messages={messages||[]} addMessage={addMessage} replyMessage={replyMessage} markRead={markMsgRead} markActioned={markMsgActioned} editMessage={editMessage} clientMode={true}/>
@@ -2750,7 +2828,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {groups.map((g,gi)=>{
               const key = g.letter+'_'+gi
-              const col = g.exs[0].labelColor || groupColor(g.exs[0].blockLabel)
+              const col = g.exs[0].labelColor || groupColor(g.exs[0].blockLabel, g.exs[0].isWarmup)
               const collapsed = !!collapsedGroups[key]
               const ids = new Set(g.exs.map(e=>e.id))
               return (
@@ -2779,6 +2857,13 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                       <span style={{fontSize:10,color:C.faint,marginRight:2}}>Group colour (applies to all of {g.letter})</span>
                       {PALETTE.map(c=>(
                         <div key={c} onClick={()=>applyGroupColor(ids,c)} style={{width:20,height:20,borderRadius:'50%',background:c,cursor:'pointer',border:`2px solid ${col===c?C.white:'transparent'}`,flexShrink:0}}/>
+                      ))}
+                      <label title="Custom colour" style={{width:20,height:20,borderRadius:'50%',overflow:'hidden',cursor:'pointer',flexShrink:0,border:`1px solid ${C.border}`,position:'relative',display:'inline-block'}}>
+                        <span style={{position:'absolute',inset:0,background:'conic-gradient(red,#f80,#ff0,#0f0,#0ff,#08f,#80f,#f0f,red)'}}/>
+                        <input type="color" defaultValue={col&&String(col)[0]==='#'?col:'#3B82F6'} onChange={e=>{pushRecentColor(e.target.value);applyGroupColor(ids,e.target.value)}} style={{position:'absolute',inset:'-4px',opacity:0,cursor:'pointer',border:'none',padding:0,width:'140%',height:'140%'}}/>
+                      </label>
+                      {getRecentColors().map(rc=>(
+                        <div key={'gr'+rc} onClick={()=>applyGroupColor(ids,rc)} title="Recent" style={{width:20,height:20,borderRadius:'50%',background:rc,cursor:'pointer',border:`2px solid ${col===rc?C.white:'transparent'}`,flexShrink:0}}/>
                       ))}
                       <button onClick={()=>applyGroupColor(ids,'')} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:4,color:C.faint,fontSize:10,cursor:'pointer',padding:'2px 7px'}}>reset</button>
                     </div>
@@ -3250,6 +3335,7 @@ function CalendarView({ sessions, weeks, programs, clients, go, token, isClientV
     return d&&d.getFullYear()===yr&&d.getMonth()===mon
   })
   const done = monthSess.filter(s=>computeSessionStatus(s)==='complete').length
+  const monthPct = rollupPct(monthSess)
   const selectedClient = clientFilter ? clients.find(c=>c.id===clientFilter) : null
   const searchedClients = clients.filter(c=>c.status==='active'&&(!clientSearch||c.name.toLowerCase().includes(clientSearch.toLowerCase())))
 
@@ -3262,7 +3348,7 @@ function CalendarView({ sessions, weeks, programs, clients, go, token, isClientV
             {isClientView?'MY CALENDAR':'CALENDAR'}
           </h1>
           <p style={{fontSize:12,color:C.muted}}>
-            {monthSess.length} sessions · {done} complete
+            {monthSess.length} sessions · {done} complete · <span style={{color:trafficColor(monthPct),fontWeight:700}}>{monthPct}%</span>
             {selectedClient&&<> · <span style={{color:clientPalette(clients,clientFilter)}}>{selectedClient.name}</span></>}
           </p>
         </div>
@@ -5030,7 +5116,7 @@ function ClientDashboard({clientId,...props}){
           <div style={{display:'flex',flexDirection:'column',gap:24}}>
             {(current.length>0||complete.length>0)&&(()=>{
               const toShow=current.length>0?current.slice(0,2):complete.slice(0,1)
-              return(<div><SL>Program Progress</SL>{toShow.map(prog=>{const ps=sessions.filter(s=>s.program_id===prog.id);const done=ps.filter(s=>computeSessionStatus(s)==='complete').length;const pct=ps.length>0?Math.round(done/ps.length*100):0;const isComplete=prog.status==='complete';return(<Card key={prog.id} onClick={()=>go('program',{programId:prog.id,clientId})} style={{cursor:'pointer',marginBottom:8,borderColor:isComplete?`${C.green}40`:undefined}}><Row style={{alignItems:'center'}}><div style={{flex:1}}><Row style={{alignItems:'center',gap:8,marginBottom:3}}><span style={{fontWeight:700,color:C.white}}>{prog.name}</span><Tag v={isComplete?'Complete':prog.phase||'Current'} color={isComplete?C.green:C.amber} small/></Row><Row style={{justifyContent:'space-between',marginBottom:3}}><span style={{fontSize:12,color:C.muted}}>{done}/{ps.length} sessions</span><span style={{fontSize:12,fontWeight:700,color:trafficColor(pct)}}>{pct}%</span></Row><ProgressBar value={pct}/></div><span style={{color:C.faint,marginLeft:12}}>›</span></Row></Card>)})}</div>)
+              return(<div><SL>Program Progress</SL>{toShow.map(prog=>{const ps=sessions.filter(s=>s.program_id===prog.id);const done=ps.filter(s=>computeSessionStatus(s)==='complete').length;const pct=rollupPct(ps);const isComplete=prog.status==='complete';return(<Card key={prog.id} onClick={()=>go('program',{programId:prog.id,clientId})} style={{cursor:'pointer',marginBottom:8,borderColor:isComplete?`${C.green}40`:undefined}}><Row style={{alignItems:'center'}}><div style={{flex:1}}><Row style={{alignItems:'center',gap:8,marginBottom:3}}><span style={{fontWeight:700,color:C.white}}>{prog.name}</span><Tag v={isComplete?'Complete':prog.phase||'Current'} color={isComplete?C.green:C.amber} small/></Row><Row style={{justifyContent:'space-between',marginBottom:3}}><span style={{fontSize:12,color:C.muted}}>{done}/{ps.length} sessions</span><span style={{fontSize:12,fontWeight:700,color:trafficColor(pct)}}>{pct}%</span></Row><ProgressBar value={pct}/></div><span style={{color:C.faint,marginLeft:12}}>›</span></Row></Card>)})}</div>)
             })()}
             <GoalsSection clientId={clientId} goals={goals} addGoal={addGoal} updateGoal={updateGoal} deleteGoal={deleteGoal} saving={saving}/>
             <FlagsSection clientId={clientId} sessions={sessions} programs={programs} weeks={weeks} flags={flags} addFlag={addFlag} updateFlag={updateFlag} deleteFlag={deleteFlag} saving={saving}/>
@@ -5529,7 +5615,7 @@ function findExerciseDuplicates(names){
   return groups
 }
 
-function ExerciseCleanup({ sessions, updateSession, mergeSession, saving }) {
+function ExerciseCleanup({ sessions, updateSession, mergeSession, saving, weeks=[], programs=[], clients=[] }) {
   const allNames = [...new Set(sessions.flatMap(s=>safeExercises(s).filter(e=>!e.isWarmup).map(e=>e.name)).filter(Boolean))].sort()
   const [groups,     setGroups]     = useState(()=>findExerciseDuplicates(allNames))
   const [ignored,    setIgnored]    = useState(()=> new Set(Object.keys(getIgnoredGroups())))
@@ -5561,6 +5647,107 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving }) {
   const refreshReg = () => setRegState({aliases:getRegAliases(),history:getRegHistory()})
   useEffect(()=>{ if(tab==='registry') setRegState({aliases:getRegAliases(),history:getRegHistory()}) }, [tab])
 
+  // ── MERGE CHECK: per-client, per-lift, grouped by PROGRAM ──
+  const _mcKey = sessions.map(s=>s.id).join(',')
+  const mergeFlags = React.useMemo(()=>{
+    const byClient={}
+    sessions.forEach(s=>{ (byClient[s.client_id]=byClient[s.client_id]||[]).push(s) })
+    const median=arr=>{ const a=arr.slice().sort((x,y)=>x-y); const n=a.length; return n?(n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2):0 }
+    const flags=[]
+    Object.keys(byClient).forEach(cid=>{
+      const byName={}
+      byClient[cid].forEach(s=>{
+        const d=getSessionDate(s,sessions,weeks,programs)
+        const prog=(programs.find(p=>p.id===s.program_id)||{}).name||'(no program)'
+        const perEx={}
+        safeExercises(s).filter(e=>!e.isWarmup).forEach(ex=>{
+          (ex.loggedSets||[]).forEach(ls=>{
+            if(ls.excluded) return
+            const cname=ls.reassignedTo?resolveExName(ls.reassignedTo):resolveExName(ex.name)
+            let best=0,bl=null,br=null
+            parseEfforts(ls.completedLoad,ls.completedReps).forEach(e=>{ const v=calcE1RM(e.load,e.reps); if(v&&v>best){best=v;bl=e.load;br=e.reps} })
+            if(best<=0) return
+            const o=perEx[cname]=perEx[cname]||{e1:0,load:null,reps:null,recs:[],orig:null,bestRec:null}
+            if(best>o.e1){o.e1=best;o.load=bl;o.reps=br;o.orig=ex._originalName||null;o.bestRec={sessId:s.id,exId:ex.id,lsId:ls.id}}
+            o.recs.push({sessId:s.id,exId:ex.id,lsId:ls.id})
+          })
+        })
+        Object.keys(perEx).forEach(name=>{ const o=perEx[name]; (byName[name]=byName[name]||[]).push({sessId:s.id,date:d,prog,pid:s.program_id||'_none',e1:o.e1,load:o.load,reps:o.reps,recs:o.recs,orig:o.orig||name,bestRec:o.bestRec}) })
+      })
+      Object.keys(byName).forEach(name=>{
+        const exps=byName[name]; if(exps.length<4) return
+        const pmap={}
+        exps.forEach(e=>{ (pmap[e.pid]=pmap[e.pid]||{pid:e.pid,prog:e.prog,exps:[]}).exps.push(e) })
+        const progs=Object.keys(pmap).map(pid=>{ const g=pmap[pid]; g.exps.sort((a,b)=>(a.date&&b.date)?(a.date-b.date):0); g.medE1=median(g.exps.map(x=>x.e1)); g.dmin=Math.min.apply(null,g.exps.map(x=>x.date?x.date.getTime():Infinity)); return g })
+        progs.sort((a,b)=>a.dmin-b.dmin)
+        const overall=median(progs.map(p=>p.medE1)); if(overall<=0) return
+        let worst=0, anySuspect=false, anyMis=false
+        progs.forEach(p=>{
+          const dev=Math.abs(p.medE1-overall)/overall
+          p.suspect = progs.length>=2 && dev>=0.6
+          if(p.suspect){ anySuspect=true; if(dev>worst)worst=dev }
+          p.exps.forEach(e=>{ e.mis=false })
+          if(p.exps.length>=3 && p.medE1>0){ p.exps.forEach(e=>{ const wd=Math.abs(e.e1-p.medE1)/p.medE1; if(wd>=0.5){ e.mis=true; anyMis=true; if(wd>worst)worst=wd } }) }
+        })
+        if(!anySuspect && !anyMis) return
+        flags.push({key:cid+'|'+name, clientId:cid, name, progs, type:anySuspect?'merge':'misentry', worst:Math.round(worst*100)})
+      })
+    })
+    return flags.sort((a,b)=>b.worst-a.worst)
+  }, [_mcKey, weeks, programs])
+  const [mcFix,setMcFix] = useState({})
+  const [mcMsg,setMcMsg] = useState(null)
+  const [mcEdit,setMcEdit] = useState(null)
+  const clientName=(id)=>{ const c=(clients||[]).find(x=>x.id===id); return c?c.name:'Client' }
+  const mcDate=(d)=> d? new Date(d).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'}) : '—'
+  const reassignRecs=async(recs,target)=>{
+    const bySess={}; recs.forEach(r=>{ (bySess[r.sessId]=bySess[r.sessId]||[]).push(r.lsId) })
+    for(const sid of Object.keys(bySess)){
+      const sess=sessions.find(s=>s.id===sid); if(!sess) continue
+      const ids=new Set(bySess[sid])
+      const newExs=safeExercises(sess).map(ex=>({...ex,loggedSets:(ex.loggedSets||[]).map(ls=> ids.has(ls.id)?{...ls,reassignedTo:target}:ls)}))
+      await updateSession(sess.id,{exercises:newExs})
+    }
+  }
+  const moveProgram=async(flag,prog)=>{
+    const fk=flag.key+'|'+prog.pid; const target=((mcFix[fk]||'')).trim()
+    if(!target){ setMcMsg('Type the exercise these logs should be — what it originally was.'); return }
+    const recs=[]; prog.exps.forEach(e=>e.recs.forEach(r=>recs.push(r)))
+    setMcMsg('Moving '+recs.length+' set(s) from "'+prog.prog+'" → "'+target+'"…')
+    await reassignRecs(recs,target)
+    setMcMsg('✓ Moved '+recs.length+' set(s) into "'+target+'". PBs and trends will recombine.')
+    setMcFix(p=>({...p,[fk]:''}))
+  }
+  const saveMcEdit=async()=>{
+    if(!mcEdit||!mcEdit.br){ setMcEdit(null); return }
+    const br=mcEdit.br; const sess=sessions.find(s=>s.id===br.sessId); if(!sess){ setMcEdit(null); return }
+    const val=(mcEdit.val||'').trim()
+    const newExs=safeExercises(sess).map(ex=> ex.id===br.exId ? {...ex,loggedSets:(ex.loggedSets||[]).map(ls=> ls.id===br.lsId ? {...ls,completedLoad:val} : ls)} : ex)
+    await updateSession(sess.id,{exercises:newExs})
+    setMcMsg('✓ Updated weight to '+val+'kg — re-checking history.')
+    setMcEdit(null)
+  }
+
+  const [rcMsg,setRcMsg] = useState(null)
+  const [rcBusy,setRcBusy] = useState(false)
+  const recomputePlan = React.useMemo(()=>{
+    const naturalRaw = (sess)=>{
+      if(sess.status==='skipped'||sess.status==='manual_complete'||sess.status==='manual_incomplete') return null
+      const exs=safeExercises(sess).filter(e=>!e.isWarmup)
+      if(!exs.length) return null
+      let tp=0,td=0
+      exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=ex.force_complete?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); tp+=p; td+=d })
+      return td===0?'not_started':(td>=tp?'complete':'in_progress')
+    }
+    const out=[]
+    sessions.forEach(s=>{ const nat=naturalRaw(s); if(!nat) return; const cur=computeSessionStatus(s); if(nat!==cur) out.push({sessId:s.id,clientId:s.client_id,name:s.name||'Session',pid:s.program_id,from:cur,to:nat}) })
+    return out
+  }, [_mcKey])
+  const applyRecompute = async ()=>{
+    setRcBusy(true); let n=0
+    for(const c of recomputePlan){ const sess=sessions.find(x=>x.id===c.sessId); if(!sess) continue; const patch={status:c.to, completed_at: c.to==='complete'?(sess.completed_at||new Date().toISOString()):null}; await updateSession(c.sessId,patch); n++ }
+    setRcBusy(false); setRcMsg('✓ Recomputed and saved '+n+' session(s) to the cloud.')
+  }
   const activeGroups  = groups.filter(g=>!ignored.has(g.join('|')))
   const ignoredGroups = groups.filter(g=> ignored.has(g.join('|')))
   const usageCount = name => sessions.filter(s=>safeExercises(s).some(e=>e.name===name)).length
@@ -5671,7 +5858,7 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving }) {
       {progress&&<div style={{background:`${C.c1}18`,border:`1px solid ${C.c1}40`,borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:13,color:C.c3}}>{progress}</div>}
 
       <Row style={{gap:0,marginBottom:16,borderBottom:`1px solid ${C.border}`}}>
-        {[{id:'flagged',l:`Flagged (${activeGroups.length})`},{id:'ignored',l:`Ignored (${ignoredGroups.length})`},{id:'merged',l:`Merged (${merged.length})`},{id:'naming',l:'Naming Convention'},{id:'registry',l:'Registry'}].map(t=>(
+        {[{id:'flagged',l:`Flagged (${activeGroups.length})`},{id:'ignored',l:`Ignored (${ignoredGroups.length})`},{id:'merged',l:`Merged (${merged.length})`},{id:'mergecheck',l:`Merge Check (${mergeFlags.length})`},{id:'completion',l:`Completion (${recomputePlan.length})`},{id:'naming',l:'Naming Convention'},{id:'registry',l:'Registry'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:'8px 18px',border:'none',borderBottom:`2px solid ${tab===t.id?C.amber:'transparent'}`,background:'transparent',color:tab===t.id?C.amber:C.muted,fontSize:13,fontWeight:600,cursor:'pointer'}}>{t.l}</button>
         ))}
       </Row>
@@ -5854,6 +6041,119 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving }) {
 
       {/* ── Merged tab ───────────────────────────────────────── */}
       {tab==='naming'&&<NamingConventionTool sessions={sessions} updateSession={updateSession}/>}
+      {tab==='mergecheck'&&(
+        <div>
+          <div style={{background:`${C.c1}0d`,border:`1px solid ${C.c1}30`,borderRadius:8,padding:'10px 14px',marginBottom:14}}>
+            <span style={{fontSize:12,color:C.c3}}>For each client, compares a lift program-by-program (reps-adjusted e1RM). A whole program sitting at a totally different level usually means a different exercise got merged in — move that program's logs to the right exercise. A single week swinging inside one program is likely a mis-log — fix the weight. Each log shows what it was originally logged as.</span>
+          </div>
+          {mcMsg&&<div style={{fontSize:12,color:C.green,fontWeight:600,marginBottom:10}}>{mcMsg}</div>}
+          {mergeFlags.length===0
+            ? <Card style={{textAlign:'center',padding:32}}><p style={{color:C.green,margin:0}}>No suspicious program-to-program swings found.</p></Card>
+            : <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                {mergeFlags.map(flag=>{
+                  const bc=flag.type==='merge'?C.orange:C.gold
+                  const lvls=flag.progs.map(p=>Math.round(p.medE1))
+                  return (
+                    <Card key={flag.key} style={{padding:'13px 15px',borderLeft:`3px solid ${bc}`}}>
+                      <Row style={{alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+                        <span style={{fontWeight:700,color:C.amber,fontSize:13}}>{clientName(flag.clientId)}</span>
+                        <span style={{color:C.faint}}>·</span>
+                        <span style={{fontWeight:700,color:C.white,fontSize:14}}>{flag.name}</span>
+                        <span style={{fontSize:10,fontWeight:700,color:bc,background:`${bc}18`,border:`1px solid ${bc}40`,borderRadius:5,padding:'2px 8px'}}>{flag.type==='merge'?'likely merged':'check entry'}</span>
+                        <span style={{fontSize:11,color:C.faint}}>e1RM by program: {lvls.join(' → ')}kg</span>
+                      </Row>
+                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                        {flag.progs.map(prog=>{
+                          const fk=flag.key+'|'+prog.pid; const tgt=mcFix[fk]||''
+                          return (
+                            <div key={prog.pid} style={{background:prog.suspect?`${C.orange}10`:C.ink,border:`1px solid ${prog.suspect?`${C.orange}55`:C.border}`,borderRadius:9,padding:'9px 11px'}}>
+                              <Row style={{alignItems:'center',gap:8,marginBottom:7,flexWrap:'wrap'}}>
+                                <span style={{fontWeight:700,color:prog.suspect?C.orange:C.white,fontSize:12}}>{prog.prog}</span>
+                                <span style={{fontSize:11,color:C.faint}}>{mcDate(prog.exps[0].date)}{prog.exps.length>1?' – '+mcDate(prog.exps[prog.exps.length-1].date):''}</span>
+                                <span style={{fontSize:11,fontWeight:700,color:C.c3}}>~{Math.round(prog.medE1)}kg e1RM</span>
+                                {prog.suspect&&<span style={{fontSize:10,color:C.orange}}>looks like a different exercise</span>}
+                              </Row>
+                              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:prog.suspect?9:0}}>
+                                {prog.exps.map((e,i)=>(
+                                  <div key={i} style={{position:'relative',minWidth:98,background:e.mis?`${C.gold}14`:C.card,border:`1px solid ${e.mis?`${C.gold}80`:C.border}`,borderRadius:8,padding:'6px 8px'}}>
+                                    <div onClick={()=>setMcEdit({key:flag.key,br:e.bestRec,date:e.date,prog:prog.prog,reps:e.reps,val:String(e.load!=null?e.load:'')})} title="Edit logged weight" style={{position:'absolute',top:2,right:5,fontSize:12,color:C.faint,cursor:'pointer',lineHeight:1}}>{'✎'}</div>
+                                    <div style={{fontSize:13,fontWeight:700,color:e.mis?C.gold:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{fmtN(e.reps)} × {e.load!=null?e.load+'kg':'—'}</div>
+                                    <div style={{fontSize:9,color:C.c3}}>e1RM {Math.round(e.e1)}</div>
+                                    <div style={{fontSize:9,color:C.faint,marginTop:1}}>{mcDate(e.date)}</div>
+                                    <div style={{fontSize:9,color:C.muted,marginTop:1,maxWidth:92,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={'logged as '+e.orig}>as: {e.orig}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              {prog.suspect&&(
+                                <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginTop:2}}>
+                                  <input list={'mcp_'+fk} value={tgt} onChange={ev=>setMcFix(p=>({...p,[fk]:ev.target.value}))} placeholder="Move this program's logs to…" style={{...iS,flex:1,minWidth:180,fontSize:12,padding:'7px 10px'}}/>
+                                  <datalist id={'mcp_'+fk}>{allNames.filter(n=>n!==flag.name).map(n=><option key={n} value={n}/>)}</datalist>
+                                  <Btn label="Move program" small disabled={!tgt.trim()} onClick={()=>moveProgram(flag,prog)}/>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                      {mcEdit&&mcEdit.key===flag.key&&mcEdit.br&&(
+                        <div style={{background:C.ink,border:`1px solid ${C.amber}55`,borderRadius:9,padding:'9px 11px',marginTop:10}}>
+                          <div style={{fontSize:11,color:C.muted,marginBottom:6}}>Fix the logged weight for {mcDate(mcEdit.date)} · {mcEdit.prog}:</div>
+                          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                            <input value={mcEdit.val} onChange={ev=>setMcEdit(p=>({...p,val:ev.target.value}))} inputMode="decimal" placeholder="kg" style={{...iS,width:90,fontSize:13,padding:'8px 10px'}}/>
+                            <span style={{fontSize:12,color:C.faint}}>kg × {fmtN(mcEdit.reps)} reps</span>
+                            <Btn label="Save weight" small onClick={saveMcEdit}/>
+                            <button onClick={()=>setMcEdit(null)} style={{background:'none',border:'none',color:C.muted,fontSize:12,cursor:'pointer'}}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+                    </Card>
+                  )
+                })}
+              </div>
+          }
+        </div>
+      )}
+      {tab==='completion'&&(
+        <div>
+          <div style={{background:`${C.c1}0d`,border:`1px solid ${C.c1}30`,borderRadius:8,padding:'10px 14px',marginBottom:14}}>
+            <span style={{fontSize:12,color:C.c3}}>Recomputes every session's complete / in-progress status from the actual logged sets, using the corrected rule — reps or a tick count as done, a missing weight no longer marks a set incomplete. Sessions you or the client manually finished, reopened or skipped are left alone. Only the status flag and date change; no logged set is touched.</span>
+          </div>
+          {rcMsg&&<div style={{fontSize:12,color:C.green,fontWeight:600,marginBottom:10}}>{rcMsg}</div>}
+          {recomputePlan.length===0
+            ? <Card style={{textAlign:'center',padding:32}}><p style={{color:C.green,margin:0}}>Everything already matches — no sessions need updating.</p></Card>
+            : (()=>{
+                const tally={}; recomputePlan.forEach(c=>{ const k=c.from+'→'+c.to; tally[k]=(tally[k]||0)+1 })
+                return (
+                  <div>
+                    <Card style={{padding:'13px 15px',marginBottom:12}}>
+                      <div style={{fontSize:14,fontWeight:700,color:C.white,marginBottom:6}}>{recomputePlan.length} session(s) will change</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:12}}>
+                        {Object.keys(tally).map(k=>{ const [fr,to]=k.split('→'); return (
+                          <span key={k} style={{fontSize:11,color:C.muted,background:C.ink,border:`1px solid ${C.border}`,borderRadius:6,padding:'4px 9px'}}>
+                            <span style={{color:(STATUS[fr]||{}).color}}>{(STATUS[fr]||{}).label||fr}</span> {'→'} <span style={{color:(STATUS[to]||{}).color}}>{(STATUS[to]||{}).label||to}</span> : <b style={{color:C.white}}>{tally[k]}</b>
+                          </span>
+                        )})}
+                      </div>
+                      <Btn label={rcBusy?'Saving…':('Apply & save '+recomputePlan.length+' to cloud')} disabled={rcBusy} onClick={applyRecompute}/>
+                      <div style={{fontSize:11,color:C.faint,marginTop:8}}>Preview only until you press this. Re-runnable and only changes status/date.</div>
+                    </Card>
+                    <div style={{display:'flex',flexDirection:'column',gap:5,maxHeight:480,overflowY:'auto'}}>
+                      {recomputePlan.slice(0,300).map(c=>(
+                        <div key={c.sessId} style={{display:'flex',alignItems:'center',gap:8,fontSize:12,background:C.ink,border:`1px solid ${C.border}`,borderRadius:7,padding:'7px 11px',flexWrap:'wrap'}}>
+                          <span style={{color:C.amber,fontWeight:600}}>{clientName(c.clientId)}</span>
+                          <span style={{color:C.faint}}>{'·'}</span>
+                          <span style={{color:C.white}}>{(programs.find(p=>p.id===c.pid)||{}).name||''} {'—'} {c.name}</span>
+                          <span style={{marginLeft:'auto',fontSize:11}}><span style={{color:(STATUS[c.from]||{}).color}}>{(STATUS[c.from]||{}).label||c.from}</span> {'→'} <span style={{color:(STATUS[c.to]||{}).color,fontWeight:700}}>{(STATUS[c.to]||{}).label||c.to}</span></span>
+                        </div>
+                      ))}
+                      {recomputePlan.length>300&&<div style={{fontSize:11,color:C.faint,textAlign:'center',padding:6}}>+{recomputePlan.length-300} more — all will be saved.</div>}
+                    </div>
+                  </div>
+                )
+              })()
+          }
+        </div>
+      )}
       {tab==='registry'&&(()=>{
         const aliasEntries = Object.entries(regState.aliases).sort((a,b)=>a[1].localeCompare(b[1]))
         return(
@@ -6048,9 +6348,8 @@ function ExerciseHistoryModal({ exerciseName, clientId, sessions, weeks, program
                 </div>
                 <table style={{width:'100%',fontSize:13,borderCollapse:'collapse'}}>
                   <tbody>
-                    <tr><td style={{color:C.faint,fontSize:10,padding:'2px 8px 4px 0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>Set</td>{ss.sets.map((x,j)=><td key={j} style={{color:C.muted,fontWeight:700,textAlign:'center',padding:'2px 6px'}}>{x.setNumber||j+1}</td>)}</tr>
-                    <tr><td style={{color:C.faint,fontSize:10,padding:'2px 8px 4px 0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>Weight</td>{ss.sets.map((x,j)=><td key={j} style={{color:C.white,textAlign:'center',padding:'2px 6px',fontWeight:600}}>{x.rawLoad||'—'}</td>)}</tr>
-                    <tr><td style={{color:C.faint,fontSize:10,padding:'2px 8px 4px 0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>Reps</td>{ss.sets.map((x,j)=><td key={j} style={{color:C.white,textAlign:'center',padding:'2px 6px'}}>{x.rawReps||'—'}</td>)}</tr>
+                    <tr><td style={{color:C.faint,fontSize:10,padding:'2px 8px 4px 0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>Reps</td>{ss.sets.map((x,j)=><td key={j} style={{color:C.white,textAlign:'center',padding:'2px 6px'}}>{fmtN(x.rawReps)||'—'}</td>)}</tr>
+                    <tr><td style={{color:C.faint,fontSize:10,padding:'2px 8px 4px 0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>Weight</td>{ss.sets.map((x,j)=>{ const w=x.rawLoad; const wd=(w!=null&&String(w).trim()!=='')?(/[a-z]/i.test(String(w))?String(w):String(w)+'kg'):'—'; return <td key={j} style={{color:C.white,textAlign:'center',padding:'2px 6px',fontWeight:600}}>{wd}</td> })}</tr>
                   </tbody>
                 </table>
               </div>
@@ -6383,10 +6682,15 @@ function getSessionPBs(sessId, pbs){
   })
   return out
 }
-function GuidedSession({ sess, programName, updateSession, onExit, onFinish }){
+function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId }){
   const exs = safeExercises(sess)
+  const CFIELD = { reps:'completedReps', time:'completedTime', load:'completedLoad', rpe:'rpe', rir:'rir', distance:'completedDistance', speed:'speed', rpm:'rpm', power:'power', energy:'energy', hr:'hr', vas:'vas', band:'bandColour' }
+  const MET = { load:'Weight', rpe:'RPE', rir:'RIR', distance:'Distance', speed:'Speed', rpm:'RPM', power:'Power', energy:'Energy', hr:'Heart rate', vas:'Pain', band:'Band' }
+  const NUMK = {reps:1, load:2.5, rpe:0.5, rir:0.5, distance:1, speed:0.5, rpm:1, power:1, energy:1, hr:1, vas:1}
   const setCount = e => parseInt(e.sets) || (Array.isArray(e.targets)?e.targets.length:0) || (Array.isArray(e.loggedSets)?e.loggedSets.length:0) || 1
   const saveExs = (newExs) => { const ns=computeSessionStatus({...sess,exercises:newExs}); updateSession(sess.id,{exercises:newExs, status:ns, completed_at: ns==='complete'?(sess.completed_at||new Date().toISOString()):null}) }
+  const parseT = (r)=>{ if(r==null||r==='') return 90; const s=String(r).trim(); if(s.indexOf(':')>=0){ const p=s.split(':'); return (parseInt(p[0])||0)*60+(parseInt(p[1])||0) } const n=parseInt(s); return isNaN(n)?90:n }
+  const fmt = (s)=>{ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0') }
 
   const steps = (()=>{
     const order=[], groups={}
@@ -6401,54 +6705,81 @@ function GuidedSession({ sess, programName, updateSession, onExit, onFinish }){
   const isStepDone = st => { const e=exs[st.exIndex]; const lg=(e.loggedSets||[]).find(x=>x.setNumber===st.setIdx+1); return !!(lg&&setIsDone(lg)) }
   const firstUndone = (()=>{ for(let k=0;k<steps.length;k++) if(!isStepDone(steps[k])) return k; return 0 })()
 
-  const [cursor,setCursor] = React.useState(firstUndone)
+  const [cursor,setCursor] = useState(firstUndone)
   const c = Math.max(0, Math.min(cursor, steps.length-1))
   const step = steps[c] || {exIndex:0,setIdx:0,nSets:1,superset:false}
   const ex = exs[step.exIndex] || {}
   const setNum = step.setIdx+1
   const logged = (ex.loggedSets||[]).find(x=>x.setNumber===setNum) || {}
-  const tgt = (Array.isArray(ex.targets)&&ex.targets[step.setIdx]) ? ex.targets[step.setIdx] : {}
-  const pVal = (...arr) => { for(const v of arr){ if(v!=null&&String(v).trim()!=='') return String(v).trim() } return '' }
-  const prescLoad = pVal(logged.completedLoad, tgt.load, ex.load)
-  const prescReps = pVal(logged.completedReps, tgt.reps, ex.reps)
-  const prescRpe  = pVal(logged.rpe, tgt.rpe, ex.rpe)
 
-  const [draft,setDraft] = React.useState({load:prescLoad,reps:prescReps,rpe:prescRpe})
-  React.useEffect(()=>{ setDraft({load:prescLoad,reps:prescReps,rpe:prescRpe}) },[c, sess.id])
+  const collect = ex.collect || (ex.isWarmup?['reps']:['reps','load'])
+  const isWarm = !!ex.isWarmup
+  const isTime = !!(collect.includes('time')||(ex.time&&!ex.reps))
+  const blkCol = ex.labelColor || groupColor(ex.blockLabel, isWarm)
+  const metricInputs = collect.filter(k=> k!=='reps' && k!=='time' && CFIELD[k] && !(k==='load'&&isWarm))
+  const repsSplit = String(ex.reps==null?'':ex.reps).split('/').map(x=>x.trim()).filter(x=>x!=='')
+  const prescReps = (Array.isArray(ex.targets)&&ex.targets[step.setIdx]&&ex.targets[step.setIdx].reps!=null) ? String(ex.targets[step.setIdx].reps) : (repsSplit.length?repsSplit[Math.min(step.setIdx,repsSplit.length-1)]:'')
+  const prescTime = ex.time || (isTime?prescReps:'')
+  const _tRpe = (Array.isArray(ex.targets)&&ex.targets[step.setIdx]&&ex.targets[step.setIdx].rpe) || ex.rpe || ''
+  const _tRir = (Array.isArray(ex.targets)&&ex.targets[step.setIdx]&&ex.targets[step.setIdx].rir) || ex.rir || ''
+  const prescBits = []
+  if(isTime){ if(prescTime) prescBits.push(String(prescTime)) } else if(prescReps) prescBits.push(fmtN(prescReps)+' reps')
+  if(_tRpe) prescBits.push('RPE '+_tRpe)
+  if(_tRir) prescBits.push('RIR '+_tRir)
+  if(ex.tempo) prescBits.push('Tempo '+ex.tempo)
+  const prescLine = prescBits.join('  ·  ')
 
-  const [timerMode,setTimerMode] = React.useState('off')
-  const [resting,setResting] = React.useState(false)
-  const [restSec,setRestSec] = React.useState(0)
-  const [restTarget,setRestTarget] = React.useState(90)
-  React.useEffect(()=>{ if(!resting) return; const id=setInterval(()=>setRestSec(s=>s+1),1000); return ()=>clearInterval(id) },[resting])
-  React.useEffect(()=>{ if(resting&&timerMode==='down'&&restSec>=restTarget) setResting(false) },[restSec,resting,timerMode,restTarget])
+  const inputDefs = isWarm ? [] : isTime
+    ? metricInputs.map(k=>({k, lab:MET[k]||k}))
+    : [{k:'reps', lab:'Reps'}, ...metricInputs.map(k=>({k, lab:MET[k]||k}))]
 
-  const parseRest = (r)=>{ if(r==null||r==='') return 90; const s=String(r).trim(); if(s.indexOf(':')>=0){ const p=s.split(':'); return (parseInt(p[0])||0)*60+(parseInt(p[1])||0) } const n=parseInt(s); return isNaN(n)?90:n }
-  const fmt = (s)=>{ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0') }
-  const bump = (k,d,min=0)=> setDraft(p=>{ const cur=parseFloat(p[k]); const b=isNaN(cur)?0:cur; let v=Math.round((b+d)*10)/10; if(v<min)v=min; return {...p,[k]:String(v)} })
+  const initDraft = ()=>{ const d={}; inputDefs.forEach(({k})=>{ const f=CFIELD[k]; if(logged[f]!=null&&String(logged[f]).trim()!=='') d[k]=String(logged[f]); else if(k==='reps') d[k]=fmtN(prescReps); else d[k]='' }); return d }
+  const [draft,setDraft] = useState(initDraft)
+  useEffect(()=>{ setDraft(initDraft()) },[c, sess.id])
+
+  const [restOn,setRestOn] = useState(!!initialRest)
+  const [histEx,setHistEx] = useState(null)
+  const [resting,setResting] = useState(false)
+  const [restSec,setRestSec] = useState(0)
+  const [restTarget,setRestTarget] = useState(0)
+  const [restUp,setRestUp] = useState(false)
+  useEffect(()=>{ if(!resting) return; const id=setInterval(()=>setRestSec(s=>s+1),1000); return ()=>clearInterval(id) },[resting])
+  useEffect(()=>{ if(resting&&!restUp&&restSec>=restTarget) setResting(false) },[restSec,resting,restUp,restTarget])
+
+  const [effOn,setEffOn] = useState(false)
+  const [effSec,setEffSec] = useState(0)
+  useEffect(()=>{ if(!effOn) return; const id=setInterval(()=>setEffSec(s=>s+1),1000); return ()=>clearInterval(id) },[effOn])
+  useEffect(()=>{ setEffOn(false); setEffSec(0) },[c, sess.id])
+  const effTarget = parseT(prescTime)
+
+  const bump = (k,d)=> setDraft(p=>{ const cur=parseFloat(p[k]); const b=isNaN(cur)?0:cur; let v=Math.round((b+d)*10)/10; if(v<0)v=0; return {...p,[k]:String(v)} })
 
   const totalSteps = steps.length
   const doneSteps = steps.filter(isStepDone).length
 
-  const logSet = ()=>{
-    const ls=[...(ex.loggedSets||[])]
-    const idx=ls.findIndex(x=>x.setNumber===setNum)
-    const base = idx>=0 ? ls[idx] : {id:uid(),setNumber:setNum}
-    const entry = {...base, confirmed:true, skipped:false}
-    if(draft.load!=='') entry.completedLoad=draft.load; else delete entry.completedLoad
-    if(draft.reps!=='') entry.completedReps=draft.reps; else delete entry.completedReps
-    if(draft.rpe!=='') entry.rpe=draft.rpe
+  const advance = (restFrom)=>{ if(c<steps.length-1){ setCursor(c+1); if(restOn){ setRestUp(!restFrom); setRestTarget(parseT(restFrom)); setRestSec(0); setResting(true) } } else { onFinish&&onFinish() } }
+  const writeSet = (extra)=>{
+    const ls=[...(ex.loggedSets||[])]; const idx=ls.findIndex(x=>x.setNumber===setNum)
+    const base = idx>=0?ls[idx]:{id:uid(),setNumber:setNum}
+    const entry={...base, skipped:false, ...extra}
     if(idx>=0) ls[idx]=entry; else ls.push(entry)
-    saveExs(exs.map((x,i)=> i===step.exIndex ? {...x,loggedSets:ls} : x))
-    const restFrom = ex.rest
-    if(c < steps.length-1){ setCursor(c+1); if(timerMode!=='off'){ setRestTarget(parseRest(restFrom)); setRestSec(0); setResting(true) } }
-    else { onFinish && onFinish() }
+    saveExs(exs.map((x,i)=> i===step.exIndex?{...x,loggedSets:ls}:x))
+  }
+  const logSet = ()=>{
+    const e={confirmed:true}
+    if(!isWarm && !isTime) e.completedReps = (draft.reps!==''?fmtN(draft.reps):fmtN(prescReps))
+    if(isTime) e.completedTime = prescTime||prescReps||''
+    metricInputs.forEach(k=>{ if(draft[k]!=null&&draft[k]!=='') e[CFIELD[k]]=draft[k] })
+    writeSet(e); advance(ex.rest)
+  }
+  const markDone = ()=>{
+    const e={manualDone:true}
+    if(!isWarm && !isTime && prescReps) e.completedReps=fmtN(prescReps)
+    if(isTime) e.completedTime = prescTime||prescReps||''
+    writeSet(e); advance(ex.rest)
   }
   const jumpToEx = (exIndex)=>{ setResting(false); for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex && !isStepDone(steps[k])){ setCursor(k); return } } for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex){ setCursor(k); return } } }
   const finish = ()=>{ const ns=computeSessionStatus(sess); if(ns!=='complete') updateSession(sess.id,{status:'manual_complete',completed_at:new Date().toISOString()}); onFinish&&onFinish() }
-
-  const exOrder=[]; { const seen={}; steps.forEach(st=>{ if(!seen[st.exIndex]){seen[st.exIndex]=1; exOrder.push(st.exIndex)} }) }
-  const exDone = i => { const e=exs[i]; return Math.min((e.loggedSets||[]).filter(setIsDone).length, setCount(e)) }
 
   const tx = React.useRef(null)
   const onTouchStart = e => { tx.current = e.touches[0].clientX }
@@ -6458,8 +6789,9 @@ function GuidedSession({ sess, programName, updateSession, onExit, onFinish }){
 
   const remaining = Math.max(0, restTarget-restSec)
   const RC = 2*Math.PI*64
-  const ringFrac = timerMode==='down' ? (restTarget>0?remaining/restTarget:0) : 1
+  const repsChanged = !isWarm && !isTime && draft.reps!=='' && fmtN(draft.reps)!==fmtN(prescReps)
   const navBtn = dis => ({width:42,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 0',color:dis?C.faint:C.white,fontSize:16,background:'transparent',cursor:dis?'default':'pointer',flexShrink:0})
+  const stepBtn = {width:24,height:30,border:`1px solid ${C.border}`,borderRadius:7,background:'transparent',color:C.muted,fontSize:15,cursor:'pointer',flexShrink:0,lineHeight:1}
 
   return (
     <div>
@@ -6472,13 +6804,12 @@ function GuidedSession({ sess, programName, updateSession, onExit, onFinish }){
       <div style={{height:4,background:C.border,borderRadius:3,marginBottom:8,overflow:'hidden'}}><div style={{width:`${totalSteps?Math.round(doneSteps/totalSteps*100):0}%`,height:'100%',background:C.amber,borderRadius:3,transition:'width .3s'}}/></div>
       <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:12}}>{doneSteps} / {totalSteps} sets done</div>
 
-      <div style={{display:'flex',gap:7,overflowX:'auto',paddingBottom:6,marginBottom:14}}>
-        {exOrder.map(i=>{ const e=exs[i]; const active=i===step.exIndex; const dn=exDone(i), tot=setCount(e); const full=dn>=tot&&tot>0
+      <div style={{display:'flex',gap:6,overflowX:'auto',paddingBottom:6,marginBottom:14}}>
+        {steps.map((st,k)=>{ const e=exs[st.exIndex]; const active=k===c; const done=isStepDone(st); const col=e.labelColor||groupColor(e.blockLabel,e.isWarmup)
           return (
-            <button key={i} onClick={()=>jumpToEx(i)} style={{flex:'0 0 auto',minWidth:58,textAlign:'left',background:active?`${C.amber}14`:C.card,border:`1px solid ${active?C.amber:(full?`${C.green}55`:C.border)}`,borderRadius:10,padding:'7px 9px',cursor:'pointer'}}>
-              <div style={{fontSize:11,fontWeight:700,color:active?C.amber:(full?C.green:C.muted)}}>{e.isWarmup?'Warm':(e.blockLabel||'—')}</div>
-              <div style={{fontSize:11,color:active?C.white:C.muted,whiteSpace:'nowrap',maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'}}>{e.name}</div>
-              <div style={{fontSize:11,color:active?C.amber:C.faint}}>{dn}/{tot}</div>
+            <button key={k} onClick={()=>{setResting(false);setCursor(k)}} title={e.name+' · set '+(st.setIdx+1)} style={{flex:'0 0 auto',minWidth:44,textAlign:'center',background:active?`${col}1F`:C.card,border:`${active?2:1}px solid ${col}`,borderRadius:9,padding:active?'5px 7px':'6px 8px',cursor:'pointer'}}>
+              <div style={{fontSize:11,fontWeight:700,color:done?C.green:col}}>{e.isWarmup?'W':(e.blockLabel||'—')}</div>
+              <div style={{fontSize:11,fontWeight:700,color:done?C.green:(active?C.white:C.faint)}}>{done?'\u2713':('S'+(st.setIdx+1))}</div>
             </button>
           )
         })}
@@ -6487,75 +6818,101 @@ function GuidedSession({ sess, programName, updateSession, onExit, onFinish }){
       {resting ? (
         <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:'18px 16px',textAlign:'center',marginBottom:14}}>
           <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:13,letterSpacing:'0.1em',color:C.c3,marginBottom:10}}>RESTING</div>
-          {timerMode==='down' ? (
+          {!restUp ? (
             <div style={{display:'flex',justifyContent:'center',marginBottom:8}}>
               <svg width="150" height="150" viewBox="0 0 150 150">
                 <circle cx="75" cy="75" r="64" fill="none" stroke={C.border} strokeWidth="9"/>
-                <circle cx="75" cy="75" r="64" fill="none" stroke={C.amber} strokeWidth="9" strokeLinecap="round" strokeDasharray={RC} strokeDashoffset={RC*(1-ringFrac)} transform="rotate(-90 75 75)"/>
+                <circle cx="75" cy="75" r="64" fill="none" stroke={C.amber} strokeWidth="9" strokeLinecap="round" strokeDasharray={RC} strokeDashoffset={RC*(1-(restTarget>0?remaining/restTarget:0))} transform="rotate(-90 75 75)"/>
                 <text x="75" y="72" textAnchor="middle" fontFamily="Space Grotesk,sans-serif" fontWeight="700" fontSize="34" fill={C.white}>{fmt(remaining)}</text>
                 <text x="75" y="94" textAnchor="middle" fontFamily="Inter,sans-serif" fontSize="11" fill={C.faint}>of {fmt(restTarget)}</text>
               </svg>
             </div>
           ) : (
-            <div style={{margin:'10px 0'}}><div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:42,color:C.white,lineHeight:1}}>{fmt(restSec)}</div><div style={{fontSize:11,color:C.faint,marginTop:4}}>resting</div></div>
+            <div style={{margin:'10px 0'}}><div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:42,color:C.white,lineHeight:1}}>{fmt(restSec)}</div><div style={{fontSize:11,color:C.faint,marginTop:4}}>resting — no rest prescribed</div></div>
           )}
-          <div style={{fontSize:13,color:'rgba(255,255,255,0.85)',marginBottom:2}}>Up next: <span style={{color:C.c3,fontWeight:700}}>{ex.blockLabel?ex.blockLabel+' · ':''}{ex.name}</span></div>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.85)',marginBottom:3}}>Up next: <span style={{color:C.c3,fontWeight:700}}>{ex.name}</span></div>
+          {prescLine&&<div style={{fontSize:13,color:C.white,fontWeight:700,marginBottom:3}}>{prescLine}</div>}
           <div style={{fontSize:11,color:C.faint,marginBottom:14}}>Set {setNum} of {step.nSets}</div>
           <div style={{display:'flex',gap:8}}>
-            {timerMode==='down'&&<button onClick={()=>setRestTarget(t=>Math.max(0,t-15))} style={{flex:1,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px',fontSize:13,color:C.muted,background:'transparent',cursor:'pointer'}}>{'\u2212'}15s</button>}
-            <button onClick={()=>setResting(false)} style={{flex:1.4,border:`1px solid ${C.amber}55`,borderRadius:10,padding:'11px',fontSize:13,color:C.amber,fontWeight:700,background:`${C.amber}15`,cursor:'pointer'}}>Done resting {'\u2192'}</button>
-            {timerMode==='down'&&<button onClick={()=>setRestTarget(t=>t+15)} style={{flex:1,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px',fontSize:13,color:C.muted,background:'transparent',cursor:'pointer'}}>+15s</button>}
+            {!restUp&&<button onClick={()=>setRestTarget(t=>Math.max(0,t-15))} style={{flex:1,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px',fontSize:13,color:C.muted,background:'transparent',cursor:'pointer'}}>{'\u2212'}15s</button>}
+            <button onClick={()=>setResting(false)} style={{flex:1.4,border:`1px solid ${C.amber}55`,borderRadius:10,padding:'11px',fontSize:13,color:C.amber,fontWeight:700,background:`${C.amber}15`,cursor:'pointer'}}>Start next set {'\u2192'}</button>
+            {!restUp&&<button onClick={()=>setRestTarget(t=>t+15)} style={{flex:1,border:`1px solid ${C.border}`,borderRadius:10,padding:'11px',fontSize:13,color:C.muted,background:'transparent',cursor:'pointer'}}>+15s</button>}
           </div>
         </div>
       ) : (
         <div onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:15,marginBottom:12}}>
             <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:9,flexWrap:'wrap'}}>
-              <span style={{background:`${C.amber}26`,color:C.amber,fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6}}>{ex.isWarmup?'Warm-up':(ex.blockLabel||'—')}</span>
+              <span style={{background:`${blkCol}26`,color:blkCol,fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6}}>{isWarm?'Warm-up':(ex.blockLabel||'—')}</span>
               <span style={{fontSize:11,color:C.c3,fontWeight:700,letterSpacing:'0.05em'}}>{step.superset?'SUPERSET · ':''}SET {setNum} OF {step.nSets}</span>
+              {!isWarm&&<button onClick={()=>setHistEx(ex.name)} title="History — past weights" style={{marginLeft:'auto',background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px',color:C.muted,fontSize:11,fontWeight:600,cursor:'pointer'}}>History</button>}
             </div>
             <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:21,color:C.white,marginBottom:6}}>{ex.name}</div>
-            <div style={{fontSize:13,color:'rgba(255,255,255,0.85)',marginBottom:3}}>{[prescReps&&`${prescReps} reps`, prescLoad&&`@ ${prescLoad}${/[a-z]/i.test(String(prescLoad))?'':' kg'}`, prescRpe&&`RPE ${prescRpe}`].filter(Boolean).join(' · ')||'Log what you hit'}</div>
-            {(ex.tempo||ex.rest)&&<div style={{fontSize:11,color:C.faint}}>{[ex.tempo&&`Tempo ${ex.tempo}`, ex.rest&&`Rest ${ex.rest}`].filter(Boolean).join(' · ')}</div>}
+            <div style={{fontSize:13,color:C.white,fontWeight:600}}>Target: <span style={{color:'rgba(255,255,255,0.92)'}}>{prescLine||'—'}</span></div>
+            {ex.rest&&<div style={{fontSize:11,color:C.faint,marginTop:3}}>Rest {ex.rest}</div>}
             {ex.notes&&<div style={{fontStyle:'italic',fontSize:12,color:C.muted,borderLeft:`2px solid ${C.amber}66`,paddingLeft:8,marginTop:10}}>{ex.notes}</div>}
           </div>
 
-          <div style={{display:'flex',gap:8,marginBottom:12}}>
-            {[{k:'load',lab:'LOAD kg',st:2.5},{k:'reps',lab:'REPS',st:1},{k:'rpe',lab:'RPE',st:0.5}].map(f=>(
-              <div key={f.k} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'8px 6px'}}>
-                <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:5}}>{f.lab}</div>
-                <div style={{display:'flex',alignItems:'center',gap:3}}>
-                  <button onClick={()=>bump(f.k,-f.st)} style={{width:22,height:26,border:`1px solid ${C.border}`,borderRadius:6,background:'transparent',color:C.muted,fontSize:14,cursor:'pointer',flexShrink:0,lineHeight:1}}>{'\u2212'}</button>
-                  <input value={draft[f.k]} onChange={e=>setDraft(p=>({...p,[f.k]:e.target.value}))} inputMode="decimal" placeholder="–" style={{flex:1,minWidth:0,width:'100%',background:'transparent',border:'none',color:C.white,fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:20,textAlign:'center',outline:'none',padding:0}}/>
-                  <button onClick={()=>bump(f.k,f.st)} style={{width:22,height:26,border:`1px solid ${C.border}`,borderRadius:6,background:'transparent',color:C.muted,fontSize:14,cursor:'pointer',flexShrink:0,lineHeight:1}}>+</button>
+          {isWarm ? (
+            <div style={{marginBottom:12}}>
+              {isTime && (
+                <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12,background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'12px',marginBottom:10}}>
+                  <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:24,color:C.white}}>{effOn?fmt(Math.max(0,effTarget-effSec)):fmt(effTarget)}</div>
+                  <button onClick={()=>{ setEffSec(0); setEffOn(o=>!o) }} style={{border:`1px solid ${C.amber}55`,background:`${C.amber}15`,color:C.amber,fontWeight:700,fontSize:13,borderRadius:9,padding:'8px 16px',cursor:'pointer'}}>{effOn?'Stop':'Start'}</button>
                 </div>
+              )}
+              <button onClick={markDone} style={{width:'100%',background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Done \u2713':'Mark done'}{restOn?' & rest':''}</button>
+            </div>
+          ) : (<>
+            {isTime && (
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12,background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'12px',marginBottom:10}}>
+                <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:26,color:C.white}}>{effOn?fmt(Math.max(0,effTarget-effSec)):fmt(effTarget)}</div>
+                <button onClick={()=>{ setEffSec(0); setEffOn(o=>!o) }} style={{border:`1px solid ${C.amber}55`,background:`${C.amber}15`,color:C.amber,fontWeight:700,fontSize:13,borderRadius:9,padding:'8px 16px',cursor:'pointer'}}>{effOn?'Stop':'Start'}</button>
               </div>
-            ))}
-          </div>
-
-          {(()=>{ const prev=(ex.loggedSets||[]).filter(setIsDone).filter(x=>x.setNumber<setNum).sort((a,b)=>b.setNumber-a.setNumber)[0]; if(!prev) return null; const l=prev.completedLoad,r=prev.completedReps,rp=prev.rpe; return <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:12}}>Set {prev.setNumber}: {[l&&`${l} kg`, r&&`× ${r}`, rp&&`@ RPE ${rp}`].filter(Boolean).join(' ')||'logged'}</div> })()}
+            )}
+            {inputDefs.length>0 && (
+              <div style={{display:'flex',gap:8,marginBottom:repsChanged?4:12,flexWrap:'wrap'}}>
+                {inputDefs.map(f=>{ const txt = f.k==='band'; const unit = f.k==='load'?' kg':''
+                  return (
+                    <div key={f.k} style={{flex:'1 1 28%',minWidth:88,background:C.card,border:`1px solid ${f.k==='reps'&&repsChanged?C.amber:C.border}`,borderRadius:12,padding:'8px 6px'}}>
+                      <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:5}}>{f.lab.toUpperCase()}{unit}</div>
+                      <div style={{display:'flex',alignItems:'center',gap:3}}>
+                        {!txt&&<button onClick={()=>bump(f.k,-(NUMK[f.k]||1))} style={stepBtn}>{'\u2212'}</button>}
+                        <input value={draft[f.k]||''} onChange={e=>setDraft(p=>({...p,[f.k]:e.target.value}))} inputMode={txt?'text':'decimal'} placeholder="–" style={{flex:1,minWidth:0,width:'100%',background:'transparent',border:'none',color:C.white,fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:20,textAlign:'center',outline:'none',padding:0}}/>
+                        {!txt&&<button onClick={()=>bump(f.k,(NUMK[f.k]||1))} style={stepBtn}>+</button>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {repsChanged && <div style={{fontSize:11,color:C.amber,textAlign:'center',marginBottom:12}}>Changed from prescribed {fmtN(prescReps)} — your coach will see this.</div>}
+            {(()=>{ const prev=(ex.loggedSets||[]).filter(setIsDone).filter(x=>x.setNumber<setNum).sort((a,b)=>b.setNumber-a.setNumber)[0]; if(!prev) return null; const l=prev.completedLoad,r=prev.completedReps,rp=prev.rpe; return <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:12}}>Set {prev.setNumber}: {[l&&`${l} kg`, r&&`× ${fmtN(r)}`, rp&&`@ RPE ${rp}`].filter(Boolean).join(' ')||'logged'}</div> })()}
+            <button onClick={logSet} style={{width:'100%',background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer',marginBottom:10}}>{isStepDone(step)?'Update set':'Log set'}{restOn?' & rest':''}</button>
+          </>)}
 
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
             <button onClick={()=>{setResting(false);setCursor(Math.max(0,c-1))}} disabled={c===0} style={navBtn(c===0)}>{'\u2039'}</button>
-            <button onClick={logSet} style={{flex:1,background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Update set':'Log set'}{timerMode!=='off'?' & rest':''}</button>
+            <div style={{flex:1,textAlign:'center',fontSize:11,color:C.faint}}>Swipe or use {'\u2039 \u203a'} to move between sets</div>
             <button onClick={()=>{setResting(false);setCursor(Math.min(steps.length-1,c+1))}} disabled={c>=steps.length-1} style={navBtn(c>=steps.length-1)}>{'\u203a'}</button>
           </div>
-          <div style={{fontSize:11,color:C.faint,textAlign:'center',marginBottom:16}}>Swipe or use {'\u2039 \u203a'} to move between sets without logging</div>
         </div>
       )}
 
-      <div style={{fontSize:11,color:C.faint,marginBottom:6}}>Rest timer</div>
-      <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:10,overflow:'hidden'}}>
-        {[['off','Off'],['down','Count down'],['up','Count up']].map(([v,l],i)=>(
-          <button key={v} onClick={()=>{setTimerMode(v); if(v==='off')setResting(false)}} style={{flex:1,textAlign:'center',padding:9,fontSize:12,fontWeight:timerMode===v?700:400,cursor:'pointer',border:'none',borderLeft:i?`1px solid ${C.border}`:'none',background:timerMode===v?`${C.amber}15`:'transparent',color:timerMode===v?C.amber:C.muted}}>{l}</button>
-        ))}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:14,marginTop:12,opacity:0.85}}>
+        <button onClick={onClassic} style={{background:'none',border:'none',color:C.muted,fontSize:12,cursor:'pointer',padding:0}}>Switch to classic</button>
+        <span style={{color:C.faint,fontSize:11}}>·</span>
+        <button onClick={()=>{setRestOn(o=>!o);setResting(false)}} style={{background:'none',border:'none',color:restOn?C.amber:C.muted,fontSize:12,cursor:'pointer',padding:0}}>Rest timer: {restOn?'on':'off'}</button>
       </div>
+      {histEx && <ExerciseHistoryModal exerciseName={histEx} clientId={clientId} sessions={sessions} weeks={weeks} programs={programs} onClose={()=>setHistEx(null)}/>}
     </div>
   )
 }
 
 function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits }){
   const exs = safeExercises(sess)
+  const [mode,setMode] = useState('guided')
+  const [restOn,setRestOn] = useState(true)
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
   const tgt = (src, idx) => { if(src==null) return ''; const parts=String(src).split('/').map(z=>z.trim()).filter(Boolean); return parts.length>1?(parts[Math.min(idx,parts.length-1)]||''):(parts[0]||String(src).trim()) }
@@ -6590,10 +6947,26 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
         <button onClick={onResume} style={{width:'100%',background:'transparent',color:C.white,border:`1px solid ${C.border}`,padding:'14px 16px',borderRadius:11,fontWeight:700,fontSize:14,cursor:'pointer',marginBottom:18,fontFamily:'Space Grotesk,sans-serif'}}>Review session</button>
       ) : (
         <div style={{marginBottom:18}}>
-          <button onClick={onStart} style={{width:'100%',background:C.amber,color:C.bg,border:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:15,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em',marginBottom:8}}>
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:10,color:C.faint,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Mode</div>
+              <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:9,overflow:'hidden'}}>
+                <button onClick={()=>setMode('guided')} style={{flex:1,padding:9,fontSize:12,fontWeight:mode==='guided'?700:500,border:'none',cursor:'pointer',background:mode==='guided'?`${C.amber}18`:'transparent',color:mode==='guided'?C.amber:C.muted}}>Guided</button>
+                <button onClick={()=>setMode('manual')} style={{flex:1,padding:9,fontSize:12,fontWeight:mode==='manual'?700:500,border:'none',borderLeft:`1px solid ${C.border}`,cursor:'pointer',background:mode==='manual'?`${C.amber}18`:'transparent',color:mode==='manual'?C.amber:C.muted}}>Manual</button>
+              </div>
+            </div>
+            <div style={{flex:1,opacity:mode==='guided'?1:0.4,pointerEvents:mode==='guided'?'auto':'none'}}>
+              <div style={{fontSize:10,color:C.faint,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>Rest timer</div>
+              <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:9,overflow:'hidden'}}>
+                <button onClick={()=>setRestOn(false)} style={{flex:1,padding:9,fontSize:12,fontWeight:!restOn?700:500,border:'none',cursor:'pointer',background:!restOn?`${C.amber}18`:'transparent',color:!restOn?C.amber:C.muted}}>Off</button>
+                <button onClick={()=>setRestOn(true)} style={{flex:1,padding:9,fontSize:12,fontWeight:restOn?700:500,border:'none',borderLeft:`1px solid ${C.border}`,cursor:'pointer',background:restOn?`${C.amber}18`:'transparent',color:restOn?C.amber:C.muted}}>On</button>
+              </div>
+            </div>
+          </div>
+          <button onClick={()=>mode==='guided'?onStart(restOn):onResume()} style={{width:'100%',background:C.amber,color:C.bg,border:'none',padding:'15px 16px',borderRadius:11,fontWeight:700,fontSize:15,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.02em'}}>
             <Icon name="play" size={15} color={C.bg} fill={C.bg}/>{btnLabel}
           </button>
-          <button onClick={onResume} style={{width:'100%',background:'transparent',color:C.muted,border:`1px solid ${C.border}`,padding:'11px 16px',borderRadius:11,fontWeight:600,fontSize:13,cursor:'pointer'}}>Log all manually</button>
+          <div style={{fontSize:11,color:C.faint,textAlign:'center',marginTop:8}}>{mode==='guided'?'Guided walks you set by set':'Manual shows the whole session to log freely'}</div>
         </div>
       )}
       <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>{status==='notstarted'?'Prescribed':'What you hit'}</div>
@@ -7073,7 +7446,7 @@ function ClientMeasurements({ clientId, measurements, addMeasurement, deleteMeas
 }
 
 
-function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, deleteMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false }) {
+function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, deleteMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false, coachName:coachNameProp='' }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
   const [chatDraft, setChatDraft] = useState('')
@@ -7081,6 +7454,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const [openSessionId, setOpenSessionId] = useState(null)
   const [weekOffset, setWeekOffset] = useState(0)
   const [sessionFull, setSessionFull] = useState(false)
+  const [guidedRest, setGuidedRest] = useState(true)
   const [guided, setGuided] = useState(false)
   const openSess = (id, full=false) => { setSessionFull(!!full); setGuided(false); setOpenSessionId(id) }
   const [progressEx, setProgressEx] = useState(null)
@@ -7176,7 +7550,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const topPBs = pbs.map(p=>({name:p.name, e1rm:Math.max(0,...p.history.map(h=>h.e1rm||0))})).filter(x=>x.e1rm>0).sort((a,b)=>b.e1rm-a.e1rm).slice(0,3)
 
   const firstName = (client.name||'').split(' ')[0]
-  const coachName = (()=>{ const cm=(chatMessages||[]).filter(m=>m&&m.sender==='coach'&&m.sender_name&&m.sender_name!=='Coach').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)); return cm.length?cm[cm.length-1].sender_name:'Your Coach' })()
+  const coachName = (coachNameProp&&coachNameProp.trim()) || (()=>{ const cm=(chatMessages||[]).filter(m=>m&&m.sender==='coach'&&m.sender_name&&m.sender_name!=='Coach').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)); return cm.length?cm[cm.length-1].sender_name:'' })() || 'Your Coach'
   const todayStr = new Date().toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}).toUpperCase()
   const h = new Date().getHours()
   const greeting = `Good ${h<5?'evening':h<12?'morning':h<18?'afternoon':'evening'}, ${firstName}`
@@ -7193,16 +7567,19 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
               <button onClick={()=>setOpenSessionId(null)} style={{background:'none',border:'none',color:C.amber,cursor:'pointer',fontSize:13,fontWeight:600,padding:'6px 0',display:'flex',alignItems:'center',gap:5}}>
                 <Icon name="play" size={13} color={C.amber} style={{transform:'rotate(180deg)'}}/> Back
               </button>
-              {sessSkipped(sess)
-                ? <button onClick={()=>unskipSession(sess.id)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Un-skip</button>
-                : !sessDone(sess) && <button onClick={()=>{skipSession(sess.id); setOpenSessionId(null); setTab('sessions')}} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Skip session</button>}
+              <div style={{display:'flex',gap:6}}>
+                {sessionFull && <button onClick={()=>{setSessionFull(false);setGuided(true)}} style={{background:`${C.amber}15`,border:`1px solid ${C.amber}55`,borderRadius:6,padding:'5px 11px',color:C.amber,fontSize:11,fontWeight:700,cursor:'pointer'}}>Guided</button>}
+                {sessSkipped(sess)
+                  ? <button onClick={()=>unskipSession(sess.id)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Un-skip</button>
+                  : !sessDone(sess) && <button onClick={()=>{skipSession(sess.id); setOpenSessionId(null); setTab('sessions')}} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:6,padding:'5px 11px',color:C.muted,fontSize:11,fontWeight:700,cursor:'pointer'}}>Skip session</button>}
+              </div>
             </div>)}
             {(()=>{
               const _exs=safeExercises(sess)
               const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
               const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
-              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} onExit={()=>setGuided(false)} onFinish={()=>setGuided(false)}/>
-              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={()=>setGuided(true)}/>
+              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
@@ -7800,6 +8177,7 @@ function MainApp({ session, onSignOut }) {
   const [chatMessages, setChatMessages] = useState([])
   const [chatReads,    setChatReads]    = useState([])
   const [templates,    setTemplates]    = useState([])
+  const [coachProfile, setCoachProfile] = useState(null)
   const [loading,  setLoading]  = useState(true)
   const [saving,   setSaving]   = useState(false)
   const [error,    setError]    = useState('')
@@ -7825,7 +8203,7 @@ function MainApp({ session, onSignOut }) {
       try{
         CGEE_TOKEN = token
         await hydrateExReg(token)
-        const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl] = await Promise.all([
+        const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl,cprof] = await Promise.all([
           sb.get('clients','select=*',token), sb.get('programs','select=*',token),
           sb.get('program_weeks','select=*',token), sb.get('sessions','select=*',token),
           sb.get('body_measurements','select=*',token), sb.get('client_goals','select=*',token),
@@ -7836,9 +8214,21 @@ function MainApp({ session, onSignOut }) {
           sb.get('chat_messages','select=*',token).catch(()=>[]),
           sb.get('chat_reads','select=*',token).catch(()=>[]),
           sb.get('templates','select=*',token).catch(()=>[]),
+          sb.get('coach_profile','select=*',token).catch(()=>[]),
         ])
         if(!Array.isArray(c)) throw new Error(JSON.stringify(c))
-        setClients(c); setPrograms(p); setWeeks(w); setMeasurements(m||[]); setGoals(g||[]); setFlags(fl||[]); setAnnouncements(Array.isArray(ann)?ann:[]); setMessages(Array.isArray(msgs)?msgs:[]); setChats(Array.isArray(chts)?chts:[]); setChatMessages(Array.isArray(chmsgs)?chmsgs:[]); setChatReads(Array.isArray(chrd)?chrd:[]); setTemplates(Array.isArray(tpl)?tpl:[])
+        setClients(c); setPrograms(p); setWeeks(w); setMeasurements(m||[]); setGoals(g||[]); setFlags(fl||[]); setAnnouncements(Array.isArray(ann)?ann:[]); setMessages(Array.isArray(msgs)?msgs:[]); setChats(Array.isArray(chts)?chts:[]); setChatMessages(Array.isArray(chmsgs)?chmsgs:[]); setChatReads(Array.isArray(chrd)?chrd:[]); setTemplates(Array.isArray(tpl)?tpl:[]); setCoachProfile(Array.isArray(cprof)&&cprof.length?cprof[0]:null)
+        try{
+          const _isCoach = !c.find(cl=>cl.auth_user_id && session.user && cl.auth_user_id===session.user.id)
+          if(_isCoach){
+            const _ln=(JSON.parse(localStorage.getItem('cgee_settings')||'{}').coachName||'').trim()
+            const _row=Array.isArray(cprof)&&cprof.length?cprof[0]:null
+            if(_ln && (!_row || _row.display_name!==_ln)){
+              if(_row){ await sb.patch('coach_profile',_row.id,{display_name:_ln},token); setCoachProfile({..._row,display_name:_ln}) }
+              else { const _nr=await sb.post('coach_profile',{display_name:_ln,coach_uid:(session.user&&session.user.id)||null},token); setCoachProfile(_nr) }
+            }
+          }
+        }catch(e){}
         // Parse exercises JSON and auto-convert any lbs values
         const loadedSessions = (s||[]).map(sess=>({
           ...sess,
@@ -7997,6 +8387,7 @@ function MainApp({ session, onSignOut }) {
   const props = { clients,programs,weeks,sessions,measurements,goals,flags,announcements,saving,go,nav,token,addClient,updateClient,deleteClient,addProgram,updateProgram,deleteProgram,addWeek,deleteWeek,addSession,updateSession,deleteSession,importData,addMeasurement,deleteMeasurement,addGoal,updateGoal,deleteGoal,addFlag,updateFlag,deleteFlag,previewAsClient,messages,addMessage,replyMessage,markMsgRead,markMsgActioned }
 
   // ─── CLIENT PREVIEW MODE ────────────────────────────────────────────────────
+  const coachDisplayName = (coachProfile&&coachProfile.display_name)||''
   if(previewClientId) {
     const previewClient = clients.find(c => c.id === previewClientId)
     if(previewClient) {
@@ -8017,6 +8408,7 @@ function MainApp({ session, onSignOut }) {
         updateSession={updateSession}
         onExit={()=>setPreviewClientId(null)}
         av={analyticsVersion}
+        coachName={coachDisplayName}
       />
     }
   }
@@ -8042,6 +8434,7 @@ function MainApp({ session, onSignOut }) {
       onExit={signOutClient}
       isRealClient={true}
       av={analyticsVersion}
+      coachName={coachDisplayName}
     />
   }
 
@@ -8075,7 +8468,7 @@ function MainApp({ session, onSignOut }) {
             {nav.view==='program'    && <ProgramDetail {...props} programId={nav.programId} clientId={nav.clientId} addTemplate={addTemplate}/>}
             {nav.view==='session'    && <SessionDetail {...props} sessionId={nav.sessionId} programId={nav.programId} clientId={nav.clientId} addTemplate={addTemplate}/>}
             {nav.view==='library'    && <LibraryView sessions={sessions} av={analyticsVersion}/>}
-            {nav.view==='cleanup'    && <ExerciseCleanup sessions={sessions} updateSession={props.updateSession} mergeSession={mergeSession} saving={saving}/>}
+            {nav.view==='cleanup'    && <ExerciseCleanup sessions={sessions} updateSession={props.updateSession} mergeSession={mergeSession} saving={saving} weeks={weeks} programs={programs} clients={clients}/>}
             {nav.view==='import'     && <ImportView {...props}/>}
             {nav.view==='calendar'   && <CalendarView sessions={sessions} weeks={weeks} programs={programs} clients={clients} go={go} token={token}/>}
             {['templates','templates_program','templates_session','templates_scheme','templates_labels','name_convention'].includes(nav.view) && <TemplatesView sessions={sessions} programs={programs} weeks={weeks} clients={clients} addProgram={props.addProgram} addWeek={props.addWeek} addSession={props.addSession} go={go} templates={templates} addTemplate={addTemplate} deleteTemplate={deleteTemplate} updateTemplate={updateTemplate} initialTab={nav.view==='templates_session'?'session':nav.view==='templates_scheme'?'rep_scheme':nav.view==='templates_labels'?'label':'program'}/>}
@@ -8102,7 +8495,7 @@ function MainApp({ session, onSignOut }) {
             {nav.view==='connected_apps'       && <IntegrationsPage/>}
             {nav.view==='settings'             && <SettingsPage token={token}/>}
             {nav.view==='name_convention'      && <NamingConventionTool sessions={sessions} updateSession={props.updateSession}/>}
-            {nav.view==='db_tools'             && <ExerciseCleanup sessions={sessions} updateSession={props.updateSession} saving={saving}/>}
+            {nav.view==='db_tools'             && <ExerciseCleanup sessions={sessions} updateSession={props.updateSession} saving={saving} weeks={weeks} programs={programs} clients={clients}/>}
             {nav.view==='lbs_convert'          && <LbsConverterTool sessions={sessions} updateSession={updateSession}/>}
             {nav.view==='coaches'              && <CoachesAdminPage/>}
             {nav.view==='permissions'          && <CoachesAdminPage/>}
