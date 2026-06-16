@@ -5,6 +5,14 @@ const SUPABASE_URL      = 'https://yrrtcnpsofirlkszrwbq.supabase.co'
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlycnRjbnBzb2Zpcmxrc3pyd2JxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkzMzE4OTAsImV4cCI6MjA5NDkwNzg5MH0.BOqJYEP231yFdiBdQu4_jRvSeTvY_E1uFTyntfoZCFE'
 
 // ─── SUPABASE REST HELPERS ────────────────────────────────────────────────────
+// ─── COACH ACCESS ─────────────────────────────────────────────────────────────
+// ONLY these account emails ever reach the coach dashboard. Everyone else = client.
+const COACH_EMAILS = ['georgie.fowler@icloud.com']
+const isCoachUser = (session) => {
+  const em = ((session && session.user && session.user.email) || '').toLowerCase().trim()
+  return !!(em && COACH_EMAILS.includes(em))
+}
+
 const hdrs = (token) => ({
   apikey: SUPABASE_ANON_KEY,
   Authorization: `Bearer ${token || SUPABASE_ANON_KEY}`,
@@ -59,6 +67,21 @@ const sb = {
     })
     return r.json()
   },
+  recover: async (email) => {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    })
+    return r.ok
+  },
+  updatePassword: async (token, newPw) => {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      method: 'PUT', headers: hdrs(token), body: JSON.stringify({ password: newPw }),
+    })
+    if (!r.ok) throw new Error(await r.text())
+    return r.json()
+  },
   signOut: async (token) =>
     fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: 'POST', headers: hdrs(token) }),
 }
@@ -80,6 +103,30 @@ const C = {
   surface:'rgba(255,255,255,0.04)',
 }
 const uid = () => crypto.randomUUID()
+
+// ─── OFFLINE SAVE QUEUE ───────────────────────────────────────────────────────
+const OFFLINE_KEY = 'cgee_offline_queue'
+const offlineLoad = () => { try { return JSON.parse(localStorage.getItem(OFFLINE_KEY) || '[]') } catch(e) { return [] } }
+const offlineSaveQ = (q) => { try { localStorage.setItem(OFFLINE_KEY, JSON.stringify(q)) } catch(e) {} }
+const offlineEnqueue = (item) => { const q = offlineLoad(); q.push(item); offlineSaveQ(q); return q.length }
+const isNetErr = (e) => !navigator.onLine || (e && (e.name === 'TypeError' || /fetch|network|load failed/i.test(String((e && e.message) || ''))))
+
+function SaveBar({ online, pending, syncing, savedFlash, onSave }) {
+  let label, color, glyph, brd
+  if (syncing) { label = 'Syncing…'; color = C.c3; glyph = '\u27F3'; brd = C.c3 }
+  else if (!online && pending > 0) { label = `Offline \u00B7 ${pending} saved here`; color = C.orange; glyph = '\u2601'; brd = C.orange }
+  else if (!online) { label = 'Offline'; color = C.orange; glyph = '\u2601'; brd = C.orange }
+  else if (pending > 0) { label = `${pending} to sync`; color = C.orange; glyph = '\u2601'; brd = C.orange }
+  else if (savedFlash) { label = 'Saved \u2713'; color = C.green; glyph = '\u2713'; brd = C.green }
+  else { label = 'Save'; color = C.white; glyph = '\u2913'; brd = C.border }
+  return (
+    <div style={{position:'fixed',left:0,right:0,bottom:0,display:'flex',justifyContent:'center',pointerEvents:'none',zIndex:9000,paddingBottom:'calc(env(safe-area-inset-bottom,0px) + 74px)'}}>
+      <button onClick={onSave} style={{pointerEvents:'auto',display:'flex',alignItems:'center',gap:8,background:savedFlash?`${C.green}1A`:C.card,border:`1px solid ${brd}`,borderRadius:999,padding:'9px 18px',color,fontWeight:700,fontSize:13,fontFamily:'Space Grotesk,sans-serif',boxShadow:'0 6px 24px rgba(0,0,0,0.5)',cursor:'pointer',transition:'all .2s'}}>
+        <span style={{fontSize:14}}>{glyph}</span> {label}
+      </button>
+    </div>
+  )
+}
 
 // ─── GROUPS: single source of truth helpers ─────────────────────────────────
 const getGroups = (clients) => [...new Set((clients||[]).filter(c=>c.group_label).map(c=>c.group_label))].sort()
@@ -408,6 +455,14 @@ function StatusDot({ sess }) {
 // ─── CALENDAR DATE HELPER ────────────────────────────────────────────────────
 // Assigns each session a date: programStart + (weekNum-1)*7 + sessionIndexInWeek
 // Sessions within a week are placed on consecutive days from the week start
+// Spread sessions across their assigned week instead of consecutive days.
+// idx = session order within the week (0-based); n = sessions in that week.
+// Offsets stay 0..6 so a session never crosses into the next week.
+function spreadDayOffset(idx, n) {
+  const P = {1:[0], 2:[0,3], 3:[0,2,4], 4:[0,1,3,4], 5:[0,1,2,3,4], 6:[0,1,2,3,4,5], 7:[0,1,2,3,4,5,6]}
+  if(P[n] && idx >= 0 && idx < P[n].length) return P[n][idx]
+  return Math.min(6, ((idx % 7) + 7) % 7)
+}
 function getSessionDate(sess, allSessions, weeks, programs) {
   const prog = programs.find(p => p.id === sess.program_id)
   if(!prog?.start_date) return null
@@ -420,7 +475,7 @@ function getSessionDate(sess, allSessions, weeks, programs) {
   if(idx < 0) return null
   const base = new Date(prog.start_date + 'T00:00:00')
   const d = new Date(base)
-  d.setDate(d.getDate() + (week.week_number - 1) * 7 + idx)
+  d.setDate(d.getDate() + (week.week_number - 1) * 7 + spreadDayOffset(idx, weekSessions.length))
   return d
 }
 function toDateKey(d) {
@@ -690,6 +745,15 @@ function LoginScreen({ onLogin }) {
   const [pw, setPw] = useState('')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+  const [info, setInfo] = useState('')
+
+  const forgot = async () => {
+    const e = (email||'').trim().toLowerCase()
+    if(!e || !e.includes('@')){ setErr('Enter your email above first, then tap Forgot password.'); return }
+    setErr(''); setInfo('')
+    try { await sb.recover(e) } catch(x){}
+    setInfo('If that email has an account, a reset link is on its way. Check your inbox.')
+  }
 
   const submit = async () => {
     if(!email||!pw){ setErr('Enter email and password.'); return }
@@ -714,16 +778,86 @@ function LoginScreen({ onLogin }) {
           <h1 style={{ fontSize:28, fontWeight:700, color:C.white, letterSpacing:'-0.02em', marginBottom:6 }}>
             <span style={{color:C.amber}}>Coach</span>'d By Gee
           </h1>
-          <p style={{ fontSize:14, color:C.muted }}>{mode==='login'?'Sign in to your dashboard':'Create your coach account'}</p>
+          <p style={{ fontSize:14, color:C.muted }}>Sign in to continue</p>
         </div>
         <Card style={{padding:24}}>
           <ErrBox msg={err}/>
           <div style={{marginBottom:12}}><TI label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email"/></div>
           <div style={{marginBottom:20}}><TI label="Password" value={pw} onChange={setPw} placeholder="••••••••" type="password"/></div>
-          <Btn label={mode==='login'?'Sign In':'Create Account'} onClick={submit} loading={loading} full style={{marginBottom:10}}/>
-          <button onClick={()=>{setMode(m=>m==='login'?'signup':'login');setErr('')}} style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:13,width:'100%',textAlign:'center',padding:'4px 0'}}>
-            {mode==='login'?'No account? Sign up':'Already have an account? Sign in'}
-          </button>
+          <Btn label='Sign In' onClick={submit} loading={loading} full/>
+          <button onClick={forgot} style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:13,width:'100%',textAlign:'center',padding:'12px 0 0'}}>Forgot password?</button>
+          {info && <p style={{fontSize:12,color:C.c3,margin:'10px 0 0',textAlign:'center'}}>{info}</p>}
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function PasswordSetScreen({ token, title, subtitle, onDone }) {
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async () => {
+    if(pw.length < 8){ setErr('Use at least 8 characters.'); return }
+    if(pw !== pw2){ setErr('Passwords do not match.'); return }
+    setBusy(true); setErr('')
+    try { await sb.updatePassword(token, pw); onDone() }
+    catch(e){ setErr((e && e.message) || 'Could not set password. The link may have expired \u2014 request a new one.') }
+    finally { setBusy(false) }
+  }
+  return (
+    <div style={{ background:C.bg, minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ maxWidth:380, width:'100%' }}>
+        <div style={{ textAlign:'center', marginBottom:28 }}>
+          <h1 style={{ fontSize:26, fontWeight:700, color:C.white, letterSpacing:'-0.02em', marginBottom:6 }}>{title}</h1>
+          <p style={{ fontSize:14, color:C.muted }}>{subtitle}</p>
+        </div>
+        <Card style={{padding:24}}>
+          <ErrBox msg={err}/>
+          <div style={{marginBottom:12}}><TI label="New password" value={pw} onChange={setPw} placeholder="At least 8 characters" type="password"/></div>
+          <div style={{marginBottom:20}}><TI label="Confirm password" value={pw2} onChange={setPw2} placeholder="Re-enter password" type="password"/></div>
+          <Btn label="Set password" onClick={submit} loading={busy} full/>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function ClientOnboarding({ session, token, onCreated, onExit }) {
+  const [name, setName] = useState('')
+  const [goal, setGoal] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async () => {
+    if(!name.trim()){ setErr('Please enter your name.'); return }
+    setBusy(true); setErr('')
+    try {
+      const row = await sb.post('clients', {
+        name: name.trim(),
+        email: (session && session.user && session.user.email) || '',
+        goal: goal.trim(),
+        status: 'active',
+        auth_user_id: (session && session.user && session.user.id) || null,
+      }, token)
+      if(row && row.id) onCreated(row)
+      else setErr('Could not create your profile. Please try again.')
+    } catch(e){ setErr((e && e.message) || 'Could not create your profile.') }
+    finally { setBusy(false) }
+  }
+  return (
+    <div style={{ background:C.bg, minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ maxWidth:380, width:'100%' }}>
+        <div style={{ textAlign:'center', marginBottom:24 }}>
+          <h1 style={{ fontSize:26, fontWeight:700, color:C.white, letterSpacing:'-0.02em', marginBottom:6 }}>Welcome</h1>
+          <p style={{ fontSize:14, color:C.muted }}>Let\u2019s set up your athlete profile.</p>
+        </div>
+        <Card style={{padding:24}}>
+          <ErrBox msg={err}/>
+          <div style={{marginBottom:12}}><TI label="Your name" value={name} onChange={setName} placeholder="Alex Smith"/></div>
+          <div style={{marginBottom:20}}><TI label="Main goal (optional)" value={goal} onChange={setGoal} placeholder="Build lower body strength"/></div>
+          <Btn label="Create my profile" onClick={submit} loading={busy} full/>
+          <button onClick={onExit} style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:13,width:'100%',textAlign:'center',padding:'12px 0 0'}}>Sign out</button>
         </Card>
       </div>
     </div>
@@ -1505,6 +1639,17 @@ function ClientAccessPanel({ client, updateClient }) {
   const [busy, setBusy] = useState(false)
   const [ok, setOk] = useState(false)
   const [msg, setMsg] = useState('')
+  const [creds, setCreds] = useState(null)
+  const [copied, setCopied] = useState(false)
+  const [resetMsg, setResetMsg] = useState('')
+  const [resetBusy, setResetBusy] = useState(false)
+  const sendReset = async () => {
+    if(!client.email || resetBusy) return
+    setResetBusy(true); setResetMsg('')
+    try { await sb.recover(client.email) } catch(e){}
+    setResetMsg('Reset email sent to '+client.email+'. They tap the link to set a new password.')
+    setResetBusy(false)
+  }
   const hasLogin = !!client.auth_user_id
   const createLogin = async () => {
     if(busy) return
@@ -1516,8 +1661,8 @@ function ClientAccessPanel({ client, updateClient }) {
       const data = await sb.signUp(e, tempPw)
       const newId = (data && data.user && data.user.id) || (data && data.id)
       if(newId){
-        updateClient(client.id,{auth_user_id:newId, email:e})
-        setOk(true); setMsg('Login created. Email: '+e+'  -  Temporary password: '+tempPw+'  (give these to your client)')
+        updateClient(client.id,{auth_user_id:newId, email:e, must_set_password:true})
+        setOk(true); setMsg(''); setCreds({email:e, pw:tempPw})
       } else {
         setOk(false); setMsg((data && (data.msg||data.error_description||data.error)) || 'Could not create - this email may already be registered.')
       }
@@ -1532,7 +1677,11 @@ function ClientAccessPanel({ client, updateClient }) {
         {hasLogin && <span style={{fontSize:10,fontWeight:700,color:C.green,background:C.green+'1A',borderRadius:4,padding:'2px 7px'}}>ACTIVE</span>}
       </Row>
       {hasLogin ? (
-        <p style={{fontSize:12,color:C.muted,margin:'8px 0 0'}}>This client can log in with <strong style={{color:C.white}}>{client.email}</strong> on their own phone and will see only their own training.</p>
+        <div>
+          <p style={{fontSize:12,color:C.muted,margin:'8px 0 10px'}}>This client logs in with <strong style={{color:C.white}}>{client.email}</strong> on their own phone and sees only their own training.</p>
+          <Btn label={resetBusy?'Sending...':'Send password reset email'} small onClick={sendReset}/>
+          {resetMsg && <p style={{fontSize:11,color:C.green,margin:'8px 0 0',fontWeight:600}}>{resetMsg}</p>}
+        </div>
       ) : (
         <div style={{marginTop:10}}>
           <p style={{fontSize:12,color:C.muted,margin:'0 0 8px'}}>Create a login so this client can use the app on their own phone.</p>
@@ -1543,6 +1692,21 @@ function ClientAccessPanel({ client, updateClient }) {
         </div>
       )}
       {msg && <p style={{fontSize:12,color:ok?C.green:C.orange,margin:'10px 0 0',fontWeight:600,wordBreak:'break-word'}}>{msg}</p>}
+      {creds && (() => {
+        const handoff = `Coach'd By Gee \u2014 your login\nEmail: ${creds.email}\nTemporary password: ${creds.pw}\n\nOpen the app, sign in with these, then set your own password.`
+        const doCopy = () => { try { navigator.clipboard.writeText(handoff); setCopied(true); setTimeout(()=>setCopied(false),1800) } catch(e){} }
+        return (
+          <div style={{marginTop:12,background:C.midnight,border:'1px solid '+C.green+'40',borderRadius:9,padding:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:8,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.04em'}}>LOGIN CREATED</div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:2}}>Email</div>
+            <div style={{fontSize:13,color:C.white,fontWeight:600,marginBottom:8,wordBreak:'break-all'}}>{creds.email}</div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:2}}>Temporary password</div>
+            <div style={{fontSize:15,color:C.white,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,fontFamily:'Space Grotesk,sans-serif'}}>{creds.pw}</div>
+            <Btn label={copied?'Copied \u2713':'Copy handoff message'} small full onClick={doCopy}/>
+            <p style={{fontSize:11,color:C.muted,margin:'8px 0 0'}}>Send this to your client. They sign in, then set their own password.</p>
+          </div>
+        )
+      })()}
     </Card>
   )
 }
@@ -6980,11 +7144,22 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
               <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
                 {sets.map(sn=>{
                   const ls=(ex.loggedSets||[]).find(z=>z.setNumber===sn)
-                  const load=ls&&ls.completedLoad!=null&&String(ls.completedLoad).trim()!==''?String(ls.completedLoad).trim():null
-                  const reps=ls&&ls.completedReps!=null&&String(ls.completedReps).trim()!==''?String(ls.completedReps).trim():null
-                  const logged=!!(load||reps)
-                  const txt=logged?(load&&reps?`${load} × ${reps}`:(reps||load)):(tgt(ex.reps,sn-1)||'—')
-                  return <span key={sn} style={{fontSize:12,fontWeight:700,color:logged?C.white:C.faint,background:logged?`${C.green}14`:C.ink,border:`1px solid ${logged?`${C.green}40`:C.border}`,borderRadius:7,padding:'5px 9px'}}>{txt}</span>
+                  const presReps=tgt(ex.reps,sn-1)
+                  const isEa=/ea\b/i.test(String(presReps||''))||/ea\b/i.test(String(ex.reps||''))
+                  const mkReps=v=>{ let r=String(v).replace(/\s*ea\s*$/i,'').trim(); return r+(isEa?'ea':'') }
+                  const done=!!ls&&setIsDone(ls)
+                  let txt
+                  if(ls){
+                    const w=wtDisplay(ls)
+                    const left=w.band?`${w.text} band`:w.bw?'BW':w.kg?`${w.text}kg`:w.text
+                    const timeVal=ls.completedTime!=null&&String(ls.completedTime).trim()!==''?String(ls.completedTime).trim():null
+                    const repsVal=ls.completedReps!=null&&String(ls.completedReps).trim()!==''?String(ls.completedReps).trim():null
+                    const right=timeVal!=null?(/^\d+(\.\d+)?$/.test(timeVal)?timeVal+'sec':timeVal):(repsVal!=null?mkReps(repsVal):(presReps!=null&&presReps!==''?mkReps(presReps):null))
+                    txt=[left,right].filter(Boolean).join(' × ')||'—'
+                  } else {
+                    txt=presReps!=null&&presReps!==''?mkReps(presReps):'—'
+                  }
+                  return <span key={sn} style={{fontSize:12,fontWeight:700,color:done?C.white:C.faint,background:done?`${C.green}14`:C.ink,border:`1px solid ${done?`${C.green}40`:C.border}`,borderRadius:7,padding:'5px 9px'}}>{txt}</span>
                 })}
               </div>
             </div>
@@ -8181,6 +8356,10 @@ function MainApp({ session, onSignOut }) {
   const [loading,  setLoading]  = useState(true)
   const [saving,   setSaving]   = useState(false)
   const [error,    setError]    = useState('')
+  const [pendingSync, setPendingSync] = useState(0)
+  const [online,      setOnline]      = useState(true)
+  const [syncing,     setSyncing]     = useState(false)
+  const [savedFlash,  setSavedFlash]  = useState(false)
   const [nav, setNav] = useState({view:'dashboard',clientId:null,programId:null,sessionId:null})
   // analyticsVersion increments whenever registry, e1rm formula, or any derived-data dependency changes.
   // Pass as prop to any component that uses resolved exercise names or formula-dependent calculations.
@@ -8219,7 +8398,7 @@ function MainApp({ session, onSignOut }) {
         if(!Array.isArray(c)) throw new Error(JSON.stringify(c))
         setClients(c); setPrograms(p); setWeeks(w); setMeasurements(m||[]); setGoals(g||[]); setFlags(fl||[]); setAnnouncements(Array.isArray(ann)?ann:[]); setMessages(Array.isArray(msgs)?msgs:[]); setChats(Array.isArray(chts)?chts:[]); setChatMessages(Array.isArray(chmsgs)?chmsgs:[]); setChatReads(Array.isArray(chrd)?chrd:[]); setTemplates(Array.isArray(tpl)?tpl:[]); setCoachProfile(Array.isArray(cprof)&&cprof.length?cprof[0]:null)
         try{
-          const _isCoach = !c.find(cl=>cl.auth_user_id && session.user && cl.auth_user_id===session.user.id)
+          const _isCoach = isCoachUser(session)
           if(_isCoach){
             const _ln=(JSON.parse(localStorage.getItem('cgee_settings')||'{}').coachName||'').trim()
             const _row=Array.isArray(cprof)&&cprof.length?cprof[0]:null
@@ -8310,10 +8489,29 @@ function MainApp({ session, onSignOut }) {
     const r=await sb.post('sessions',{...d,exercises:JSON.stringify(d.exercises||[])},token)
     setSessions(p=>[...p,{...r,exercises:d.exercises||[]}]); return r
   })
+  const flushOffline = async () => {
+    const q = offlineLoad(); if(!q.length){ setPendingSync(0); return }
+    setSyncing(true); const remaining = []
+    for(const it of q){ try { await sb.patch(it.table, it.rowId, it.payload, token) } catch(e){ if(isNetErr(e)) remaining.push(it) } }
+    offlineSaveQ(remaining); setPendingSync(remaining.length); setSyncing(false)
+  }
+  const manualSave = async () => { await flushOffline(); setSavedFlash(true); setTimeout(()=>setSavedFlash(false), 1800) }
+  useEffect(() => {
+    setOnline(navigator.onLine); setPendingSync(offlineLoad().length)
+    const onUp = () => { setOnline(true); flushOffline() }
+    const onDown = () => setOnline(false)
+    window.addEventListener('online', onUp); window.addEventListener('offline', onDown)
+    if(navigator.onLine) flushOffline()
+    const iv = setInterval(() => { if(navigator.onLine && offlineLoad().length) flushOffline() }, 30000)
+    return () => { window.removeEventListener('online', onUp); window.removeEventListener('offline', onDown); clearInterval(iv) }
+  }, [token])
   const updateSession = (id,d) => {
     const payload={...d}; if(payload.exercises) payload.exercises=JSON.stringify(payload.exercises)
     setSessions(p=>p.map(s=>s.id===id?{...s,...d}:s))
-    return sb.patch('sessions',id,payload,token).catch(e=>setError(e.message))
+    return sb.patch('sessions',id,payload,token).catch(e=>{
+      if(isNetErr(e)){ const n=offlineEnqueue({qid:uid(),table:'sessions',rowId:id,payload,ts:Date.now()}); setPendingSync(n); setOnline(navigator.onLine) }
+      else setError(e.message)
+    })
   }
   const deleteSession = (id) => {
     if(!window.confirm('Delete this session?')) return
@@ -8388,10 +8586,44 @@ function MainApp({ session, onSignOut }) {
 
   // ─── CLIENT PREVIEW MODE ────────────────────────────────────────────────────
   const coachDisplayName = (coachProfile&&coachProfile.display_name)||''
+
+  // ─── ACCESS GATE: only the coach sees the coach side; everyone else is a client ───
+  const isCoach = isCoachUser(session)
+  const loggedInClient = clients.find(c => c.auth_user_id && session.user && session.user.id && c.auth_user_id === session.user.id)
+  if(!isCoach) {
+    const signOutClient = async()=>{ try{await sb.signOut(token)}catch(e){} localStorage.removeItem('cgee_session'); onSignOut() }
+    if(loggedInClient){
+      if(loggedInClient.must_set_password){
+        return <PasswordSetScreen token={token} title="Set your password" subtitle="Create your own password to start training." onDone={()=>updateClient(loggedInClient.id,{must_set_password:false})}/>
+      }
+      return (<><ClientPreviewApp
+        client={loggedInClient}
+        updateClient={updateClient}
+        sessions={sessions.filter(s=>s.client_id===loggedInClient.id)}
+        allSessions={sessions}
+        programs={programs.filter(p=>p.client_id===loggedInClient.id)}
+        weeks={weeks}
+        goals={goals.filter(g=>g.client_id===loggedInClient.id)}
+        measurements={measurements.filter(m=>m.client_id===loggedInClient.id)}
+        messages={messages.filter(m=>m.client_id===loggedInClient.id)}
+        addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
+        chats={chats.filter(c=>(c.member_ids||[]).includes(loggedInClient.id))}
+        chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement}
+        chatUnread={(id)=>chatUnread(id,loggedInClient.id)} markChatRead={(id)=>markChatRead(id,loggedInClient.id)}
+        updateSession={updateSession}
+        onExit={signOutClient}
+        isRealClient={true}
+        av={analyticsVersion}
+        coachName={coachDisplayName}
+      /><SaveBar online={online} pending={pendingSync} syncing={syncing} savedFlash={savedFlash} onSave={manualSave}/></>)
+    }
+    return <ClientOnboarding session={session} token={token} onCreated={(row)=>setClients(p=>[...p,row])} onExit={signOutClient}/>
+  }
+
   if(previewClientId) {
     const previewClient = clients.find(c => c.id === previewClientId)
     if(previewClient) {
-      return <ClientPreviewApp
+      return (<><ClientPreviewApp
         client={previewClient}
         updateClient={updateClient}
         sessions={sessions.filter(s=>s.client_id===previewClientId)}
@@ -8409,37 +8641,13 @@ function MainApp({ session, onSignOut }) {
         onExit={()=>setPreviewClientId(null)}
         av={analyticsVersion}
         coachName={coachDisplayName}
-      />
+      /><SaveBar online={online} pending={pendingSync} syncing={syncing} savedFlash={savedFlash} onSave={manualSave}/></>)
     }
-  }
-
-  const loggedInClient = clients.find(c => c.auth_user_id && session.user && session.user.id && c.auth_user_id === session.user.id)
-  if(loggedInClient) {
-    const signOutClient = async()=>{ try{await sb.signOut(token)}catch(e){} localStorage.removeItem('cgee_session'); onSignOut() }
-    return <ClientPreviewApp
-      client={loggedInClient}
-      updateClient={updateClient}
-      sessions={sessions.filter(s=>s.client_id===loggedInClient.id)}
-      allSessions={sessions}
-      programs={programs.filter(p=>p.client_id===loggedInClient.id)}
-      weeks={weeks}
-      goals={goals.filter(g=>g.client_id===loggedInClient.id)}
-      measurements={measurements.filter(m=>m.client_id===loggedInClient.id)}
-      messages={messages.filter(m=>m.client_id===loggedInClient.id)}
-      addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
-      chats={chats.filter(c=>(c.member_ids||[]).includes(loggedInClient.id))}
-      chatMessages={chatMessages} addChat={addChat} addChatMessage={addChatMessage} addMeasurement={addMeasurement} deleteMeasurement={deleteMeasurement}
-      chatUnread={(id)=>chatUnread(id,loggedInClient.id)} markChatRead={(id)=>markChatRead(id,loggedInClient.id)}
-      updateSession={updateSession}
-      onExit={signOutClient}
-      isRealClient={true}
-      av={analyticsVersion}
-      coachName={coachDisplayName}
-    />
   }
 
   return (
     <div style={{background:C.bg,height:'100vh',overflow:'hidden',color:C.white,fontSize:14,display:'flex',flexDirection:'column'}}>
+      <SaveBar online={online} pending={pendingSync} syncing={syncing} savedFlash={savedFlash} onSave={manualSave}/>
       {error&&(<div style={{position:'fixed',bottom:20,left:'50%',transform:'translateX(-50%)',background:C.red,color:C.white,padding:'10px 20px',borderRadius:8,fontSize:13,fontWeight:600,zIndex:1000,display:'flex',alignItems:'center',gap:10,maxWidth:500}}><span style={{flex:1}}>{error}</span><button onClick={()=>setError('')} style={{background:'none',border:'none',color:C.white,cursor:'pointer',fontSize:18,padding:0,lineHeight:1}}>×</button></div>)}
       {saving&&<div style={{position:'fixed',top:0,left:0,right:0,height:2,background:C.amber,zIndex:1001}}/>}
       <div style={{background:C.ink,borderBottom:`1px solid ${C.border}`,height:42,display:'flex',alignItems:'center',padding:'0 16px',gap:8,flexShrink:0,zIndex:10}}>
@@ -8518,7 +8726,17 @@ export default function App() {
     try{ const s=localStorage.getItem('cgee_session'); return s?JSON.parse(s):null }
     catch{ return null }
   })
+  const [recovery, setRecovery] = useState(()=>{
+    try{
+      const h = window.location.hash || ''
+      if(/type=recovery/.test(h) && /access_token=/.test(h)){
+        return new URLSearchParams(h.replace(/^#/,'')).get('access_token')
+      }
+    }catch(e){}
+    return null
+  })
   if(!isConfigured) return <NotConfigured/>
+  if(recovery) return <PasswordSetScreen token={recovery} title="Reset your password" subtitle="Choose a new password to finish." onDone={()=>{ try{ history.replaceState(null,'',window.location.pathname+window.location.search) }catch(e){} localStorage.removeItem('cgee_session'); setRecovery(null); setSession(null) }}/>
   if(!session)      return <LoginScreen onLogin={setSession}/>
   return <MainApp session={session} onSignOut={()=>setSession(null)}/>
 }
