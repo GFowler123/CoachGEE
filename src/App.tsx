@@ -1883,6 +1883,32 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
   return (
     <div style={{padding:20,maxWidth:860,margin:'0 auto'}}>
       <Breadcrumb items={[{label:'Clients',onClick:()=>go('clients')},{label:client.name}]}/>
+      {(client.wellness_enabled || getWellnessFor(client.id,1).length>0) && (()=>{ const logs=getWellnessFor(client.id,7); const latest=logs[0]; const sc=wellnessScore(latest); const recentRpe=sessions.filter(x=>x.client_id===client.id&&x.session_rpe).sort((a,b)=>new Date(b.completed_at||0)-new Date(a.completed_at||0)).slice(0,5); return (
+        <Panel style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.white,textTransform:'uppercase',letterSpacing:'0.05em',fontFamily:'Space Grotesk,sans-serif'}}>Readiness</span>
+            {latest&&latest.pain_flag&&<span style={{fontSize:10,fontWeight:700,color:C.orange,background:`${C.orange}1A`,borderRadius:6,padding:'2px 8px'}}>PAIN FLAGGED</span>}
+          </div>
+          {latest ? (
+            <div style={{display:'flex',alignItems:'center',gap:18}}>
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',minWidth:54}}>
+                <span style={{fontSize:30,fontWeight:700,color:sc!=null?trafficColor(sc):C.faint,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{sc!=null?sc:'--'}</span>
+                <span style={{fontSize:9,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginTop:3}}>ready today</span>
+              </div>
+              <div style={{flex:1}}>
+                <div style={{display:'flex',gap:4,alignItems:'flex-end',height:36,marginBottom:5}}>{logs.slice(0,7).reverse().map((l,i)=>{ const s2=wellnessScore(l); const h=s2!=null?Math.max(5,Math.round(s2/100*34)):5; return <div key={i} title={`${l.log_date}: ${s2!=null?s2:'-'}`} style={{flex:1,height:h,borderRadius:3,background:s2!=null?trafficColor(s2):C.lift}}/> })}</div>
+                <span style={{fontSize:10.5,color:C.muted}}>Last 7 check-ins, most recent {latest.log_date}</span>
+              </div>
+            </div>
+          ) : (
+            <p style={{fontSize:12.5,color:C.muted,fontStyle:'italic'}}>Readiness enabled, no check-ins logged yet.</p>
+          )}
+          {recentRpe.length>0 && <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+            <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Recent session effort</div>
+            <div style={{display:'flex',gap:7,flexWrap:'wrap'}}>{recentRpe.map(x=>(<span key={x.id} style={{fontSize:11,fontWeight:700,color:C.amber,background:`${C.amber}14`,border:`1px solid ${C.amber}40`,borderRadius:7,padding:'4px 9px'}}>RPE {fmtN(x.session_rpe)}{x.duration_seconds?` - ${Math.round(x.duration_seconds/60)}m`:''}</span>))}</div>
+          </div>}
+        </Panel>
+      ) })()}
       <Row style={{alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
         <div>
           <h1 style={{fontSize:22,fontWeight:700,color:C.white,marginBottom:2}}>{client.name}</h1>
@@ -2667,11 +2693,10 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                   </div>
                 )}
               </div>
-            <G3 style={{marginBottom:8}}>
+            <G2 style={{marginBottom:8}}>
               <TI label="Tempo" value={editExF.tempo||''} onChange={v=>setEditExF(p=>({...p,tempo:v}))} placeholder="3010"/>
               <TI label="Rest"  value={editExF.rest||''}  onChange={v=>setEditExF(p=>({...p,rest:v}))}  placeholder="90s"/>
-              <TI label="Video" value={editExF.videoUrl||''} onChange={v=>setEditExF(p=>({...p,videoUrl:v}))} placeholder="https://…"/>
-            </G3>
+            </G2>
             <div style={{marginBottom:8}}>
               <label style={lS}>Collect from athlete</label>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
@@ -2892,7 +2917,6 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
         <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:10}}>
           <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}</span>
           {_exDone&&<span style={{flexShrink:0,display:'flex',alignItems:'center'}} title="All sets logged"><Icon name="check" size={16} color={C.green}/></span>}
-          {ex.videoUrl&&<a href={ex.videoUrl} target="_blank" rel="noreferrer" style={{flexShrink:0,marginTop:1}}><Icon name="play" size={16} color={C.c3}/></a>}
           {ex.notes&&<button onClick={()=>setNoteOpenId(noteOpen?null:ex.id)} style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:noteOpen?`${C.amber}1A`:C.card,border:`1px solid ${noteOpen?C.amber:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:noteOpen?C.amber:C.muted,fontSize:11,fontWeight:600}}><Icon name="fileText" size={12} color={noteOpen?C.amber:C.muted}/>Note</button>}
           <button onClick={()=>{setAthleteNoteEx(athleteNoteEx===ex.id?null:ex.id);setAthleteNoteDraft('')}} title="Leave your coach a note" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:athleteNoteEx===ex.id?`${C.c1}22`:C.card,border:`1px solid ${athleteNoteEx===ex.id?C.c2:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:athleteNoteEx===ex.id?C.c3:C.muted,fontSize:11,fontWeight:600}}><Icon name="message" size={12} color={athleteNoteEx===ex.id?C.c3:C.muted}/></button>
           {!ex.isWarmup&&<button onClick={()=>setHistoryEx(ex.name)} title="History — past weights" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:C.muted,fontSize:11,fontWeight:600}}><Icon name="clock" size={12} color={C.muted}/></button>}
@@ -3172,18 +3196,6 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
 
 
 // ─── TEMPLATES (localStorage) ────────────────────────────────────────────────
-function useTemplates() {
-  const KEY = 'cgee_templates'
-  const [templates, setTemplates] = React.useState(()=>{
-    try{ return JSON.parse(localStorage.getItem(KEY)||'[]') } catch{ return [] }
-  })
-  const persist = ts => { localStorage.setItem(KEY, JSON.stringify(ts)); setTemplates(ts) }
-  const addTemplate    = t  => persist([...templates, {...t, id:uid(), created_at:new Date().toISOString()}])
-  const deleteTemplate = id => persist(templates.filter(t=>t.id!==id))
-  const updateTemplate = (id,d) => persist(templates.map(t=>t.id===id?{...t,...d}:t))
-  return { templates, addTemplate, deleteTemplate, updateTemplate }
-}
-
 const TEMPLATE_TYPES = [
   {id:'program',   label:'Program Templates', icon:'▦', desc:'Full program structures with weeks, sessions, and exercise prescriptions'},
   {id:'session',   label:'Session Templates',  icon:'◈', desc:'Reusable session layouts with exercise blocks and set/rep schemes'},
@@ -3946,6 +3958,7 @@ function getClientPBs(clientId, sessions, allSessions, weeks, programs) {
 
 function generateAutoFlags(client, sessions, allSessions, programs, weeks) {
   const flags = [], cs = sessions.filter(s=>s.client_id===client.id)
+  ;(()=>{ const wl=getWellnessFor(client.id,3); const lat=wl[0]; if(lat){ const sc=wellnessScore(lat); if(lat.pain_flag) flags.push({id:`af_pain_${client.id}`,flag_type:'injury',title:'Pain flagged in latest check-in',body:lat.notes||'Athlete flagged pain or injury in their daily readiness check-in.',is_auto:true,is_resolved:false}); if(sc!=null && sc<40) flags.push({id:`af_ready_${client.id}`,flag_type:'warning',title:`Low readiness (${sc}/100)`,body:`Latest check-in ${lat.log_date} — sleep, energy or soreness trending low.`,is_auto:true,is_resolved:false}) } })()
   if(cs.length<3) return flags
   const recent8 = cs.slice(-8)
   const notDone = recent8.filter(s=>computeSessionStatus(s)==='not_started').length
@@ -7221,7 +7234,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
         <button onClick={()=>{setRestOn(o=>!o);setResting(false)}} style={{background:'none',border:'none',color:restOn?C.amber:C.muted,fontSize:12,cursor:'pointer',padding:0}}>Rest timer: {restOn?'on':'off'}</button>
       </div>
       {checkIn && (
-        <div style={{position:'fixed',inset:0,zIndex:600,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+        <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
           <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
             <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',marginBottom:4}}>Nice work!</h2>
             <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:16}}>
@@ -7923,7 +7936,7 @@ function ClientWalkthrough({ onClose }){
   const last = step===steps.length-1
   const cur = steps[step]
   return (
-    <div style={{position:'fixed',inset:0,zIndex:500,background:'rgba(4,7,15,0.9)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.9)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
       <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px 10px'}}>
           <div style={{display:'flex',gap:5}}>{steps.map((_,i)=>(<span key={i} style={{width:i===step?20:7,height:7,borderRadius:99,background:i===step?C.amber:(i<step?`${C.amber}66`:C.lift),transition:'all .2s'}}/>))}</div>
@@ -7942,14 +7955,14 @@ function ClientWalkthrough({ onClose }){
   )
 }
 
-function WellnessCheckIn({ clientId, existing, onClose, onDone }){
+function WellnessCheckIn({ clientId, existing, onClose, onDone, canSave=true }){
   const init = existing||{}
   const [v,setV]=useState({ sleep:init.sleep||0, energy:init.energy||0, soreness:init.soreness||0, stress:init.stress||0, mood:init.mood||0, pain_flag:!!init.pain_flag, notes:init.notes||'' })
   const set=(k,val)=>setV(p=>({...p,[k]:val}))
   const METRICS=[ ['sleep','Sleep','Poor','Great'], ['energy','Energy','Low','High'], ['mood','Mood','Low','Great'], ['soreness','Soreness','None','Very sore'], ['stress','Stress','Calm','Stressed'] ]
-  const submit=()=>{ saveWellness(clientId, { sleep:v.sleep||null, energy:v.energy||null, soreness:v.soreness||null, stress:v.stress||null, mood:v.mood||null, pain_flag:v.pain_flag, notes:(v.notes||'').trim()||null }); onDone&&onDone() }
+  const submit=()=>{ if(canSave) saveWellness(clientId, { sleep:v.sleep||null, energy:v.energy||null, soreness:v.soreness||null, stress:v.stress||null, mood:v.mood||null, pain_flag:v.pain_flag, notes:(v.notes||'').trim()||null }); onDone&&onDone() }
   return (
-    <div style={{position:'fixed',inset:0,zIndex:600,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
       <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',overflowY:'auto',padding:'20px 18px 26px'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
           <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>How are you feeling?</h2>
@@ -7968,7 +7981,8 @@ function WellnessCheckIn({ clientId, existing, onClose, onDone }){
           <span style={{fontSize:13,fontWeight:600,color:v.pain_flag?C.orange:C.white,textAlign:'left'}}>I have pain or an injury to flag</span>
         </button>
         <textarea value={v.notes} onChange={e=>set('notes',e.target.value)} placeholder="Anything else for your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:60,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
-        <button onClick={submit} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>{existing?'Update check-in':'Submit check-in'}</button>
+        <button onClick={submit} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>{!canSave?'Close':(existing?'Update check-in':'Submit check-in')}</button>
+        {!canSave && <div style={{fontSize:11,color:C.faint,textAlign:'center',marginTop:9}}>Preview - check-ins are not saved</div>}
       </div>
     </div>
   )
@@ -8161,7 +8175,7 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
     <div style={{background:C.bg,minHeight:'100vh',color:C.white,fontSize:14}}>
       <PreviewBanner client={client} onExit={onExit} isRealClient={isRealClient}/>
       {(showGuide || (isRealClient && !client.onboarded)) && <ClientWalkthrough onClose={()=>{ setShowGuide(false); if(isRealClient && !client.onboarded){ try{ updateClient(client.id,{onboarded:true}) }catch(e){} } }}/>}
-{wlOpen && <WellnessCheckIn clientId={client.id} existing={getWellnessToday(client.id)} onClose={()=>setWlOpen(false)} onDone={()=>{ setWlOpen(false); setWlTick(t=>t+1) }}/>}
+{wlOpen && <WellnessCheckIn clientId={client.id} existing={getWellnessToday(client.id)} canSave={isRealClient} onClose={()=>setWlOpen(false)} onDone={()=>{ setWlOpen(false); setWlTick(t=>t+1) }}/>}
       <div style={{maxWidth:560, margin:'0 auto', padding:'20px 16px 96px'}}>
 
         {/* ────── HOME ────── */}
@@ -8847,6 +8861,25 @@ function MainApp({ session, onSignOut }) {
       setLoading(false)
     })()
   },[])
+
+  // Lightweight near-realtime: poll conversational surfaces so chats + notes
+  // update without a manual reload (REST architecture, no websockets).
+  useEffect(()=>{
+    if(!token) return
+    const poll = async()=>{
+      if(typeof document!=='undefined' && document.visibilityState && document.visibilityState!=='visible') return
+      try{
+        const [cm, sm] = await Promise.all([
+          sb.get('chat_messages','select=*',token).catch(()=>null),
+          sb.get('session_messages','select=*',token).catch(()=>null),
+        ])
+        if(Array.isArray(cm)) setChatMessages(cm)
+        if(Array.isArray(sm)) setMessages(sm)
+      }catch(e){}
+    }
+    const iv = setInterval(poll, 20000)
+    return ()=>clearInterval(iv)
+  },[token])
 
   useEffect(()=>{
     programs.forEach(prog=>{
