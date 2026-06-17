@@ -646,6 +646,118 @@ function undoRegEntry(ts) {
 function getRegHistory() { return (loadExReg().history||[]).slice(0,50) }
 function getRegAliases() { return loadExReg().aliases||{} }
 
+// ─── EXERCISE META — global cues + demo, keyed by canonical name ───────────────
+let _EX_META = {}
+function exMetaKey(name){ return resolveExName(name||'').toLowerCase().trim() }
+function getExMeta(name){ const k=exMetaKey(name); return (k && _EX_META[k]) ? _EX_META[k] : null }
+async function hydrateExMeta(token){
+  try{
+    const r = await sb.get('exercise_meta','select=*',token)
+    if(Array.isArray(r)){ const m={}; r.forEach(row=>{ if(row && row.name_key) m[row.name_key]=row }); _EX_META=m }
+  }catch(e){}
+  return _EX_META
+}
+function saveExMeta(name, fields){
+  const k=exMetaKey(name); if(!k) return Promise.resolve()
+  const row = { name_key:k, display_name: resolveExName(name)||name||'', description:(fields&&fields.description)||'', youtube_url:(fields&&fields.youtube_url)||'', video_url:(fields&&fields.video_url)||((_EX_META[k]&&_EX_META[k].video_url)||''), updated_at:new Date().toISOString() }
+  _EX_META[k]=row
+  if(row.youtube_url||row.video_url) clearVideoReqs(name)
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{
+    return fetch(`${SUPABASE_URL}/rest/v1/exercise_meta?on_conflict=name_key`, {
+      method:'POST', headers:{ ...hdrs(CGEE_TOKEN), Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(row)
+    }).catch(()=>{})
+  }catch(e){ return Promise.resolve() }
+}
+function ytEmbed(url){
+  if(!url) return null
+  const ss=String(url).trim()
+  const m=ss.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/))([\w-]{11})/)
+  const id = m ? m[1] : (/^[\w-]{11}$/.test(ss) ? ss : null)
+  return id ? `https://www.youtube.com/embed/${id}` : null
+}
+// ─── PER-PROGRAM ATHLETE NOTES — coach note on an exercise, one program only ────
+let _EX_PNOTES = {}
+function getExPNote(programId, name){ const r=_EX_PNOTES[`${programId||''}::${exMetaKey(name)}`]; return r ? (r.note||'') : '' }
+async function hydrateExPNotes(token){
+  try{
+    const r = await sb.get('exercise_program_notes','select=*',token)
+    if(Array.isArray(r)){ const m={}; r.forEach(row=>{ if(row && row.program_id && row.name_key) m[`${row.program_id}::${row.name_key}`]=row }); _EX_PNOTES=m }
+  }catch(e){}
+  return _EX_PNOTES
+}
+function saveExPNote(programId, name, note){
+  const k=exMetaKey(name); if(!k || !programId) return Promise.resolve()
+  const row = { program_id:programId, name_key:k, note:note||'', updated_at:new Date().toISOString() }
+  _EX_PNOTES[`${programId}::${k}`]=row
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{
+    return fetch(`${SUPABASE_URL}/rest/v1/exercise_program_notes?on_conflict=program_id,name_key`, {
+      method:'POST', headers:{ ...hdrs(CGEE_TOKEN), Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(row)
+    }).catch(()=>{})
+  }catch(e){ return Promise.resolve() }
+}
+// ─── DEMO VIDEO REQUESTS — client asks coach to film a demo ────────────────────
+let _VID_REQS = []
+function getVideoReqNames(name){ const k=exMetaKey(name); return _VID_REQS.filter(r=>r.name_key===k).map(r=>r.client_name||'Athlete') }
+function hasRequestedVideo(name, clientId){ const k=exMetaKey(name); return _VID_REQS.some(r=>r.name_key===k && r.client_id===clientId) }
+async function hydrateVideoReqs(token){
+  try{ const r=await sb.get('video_requests','select=*&status=eq.pending',token); _VID_REQS=Array.isArray(r)?r:[] }catch(e){}
+  return _VID_REQS
+}
+function requestVideo(name, clientId, clientName){
+  const k=exMetaKey(name); if(!k) return Promise.resolve()
+  if(_VID_REQS.some(r=>r.name_key===k && r.client_id===clientId)) return Promise.resolve()
+  const row={ name_key:k, display_name:resolveExName(name)||name||'', client_id:clientId||null, client_name:clientName||'', status:'pending', created_at:new Date().toISOString() }
+  _VID_REQS.push(row)
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{ return fetch(`${SUPABASE_URL}/rest/v1/video_requests`, { method:'POST', headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'}, body:JSON.stringify(row) }).catch(()=>{}) }
+  catch(e){ return Promise.resolve() }
+}
+function clearVideoReqs(name){
+  const k=exMetaKey(name); if(!k) return
+  if(!_VID_REQS.some(r=>r.name_key===k)) return
+  _VID_REQS=_VID_REQS.filter(r=>r.name_key!==k)
+  try{ fetch(`${SUPABASE_URL}/rest/v1/video_requests?name_key=eq.${encodeURIComponent(k)}&status=eq.pending`, { method:'PATCH', headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'}, body:JSON.stringify({status:'fulfilled'}) }).catch(()=>{}) }catch(e){}
+}
+// ─── DAILY WELLNESS / READINESS ───────────────────────────────────────────────
+let _WELLNESS = []
+function getWellnessToday(clientId){ const d=new Date().toISOString().split('T')[0]; return _WELLNESS.find(w=>w.client_id===clientId && w.log_date===d) }
+function getWellnessFor(clientId,n=14){ return _WELLNESS.filter(w=>w.client_id===clientId).sort((a,b)=> a.log_date<b.log_date?1:-1).slice(0,n) }
+function wellnessScore(w){ if(!w) return null; const pos=[w.sleep,w.energy,w.mood].filter(v=>v!=null&&v>0); const inv=[w.soreness,w.stress].filter(v=>v!=null&&v>0).map(v=>6-v); const all=[...pos,...inv]; if(!all.length) return null; const avg=all.reduce((a,b)=>a+b,0)/all.length; return Math.round((avg-1)/4*100) }
+async function hydrateWellness(token){ try{ const r=await sb.get('wellness_logs','select=*&order=log_date.desc&limit=400',token); _WELLNESS=Array.isArray(r)?r:[] }catch(e){} return _WELLNESS }
+function saveWellness(clientId, fields){
+  const d=new Date().toISOString().split('T')[0]
+  const row={ client_id:clientId, log_date:d, ...fields }
+  const i=_WELLNESS.findIndex(w=>w.client_id===clientId && w.log_date===d)
+  if(i>=0) _WELLNESS[i]={..._WELLNESS[i],...row}; else _WELLNESS.unshift(row)
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{ return fetch(`${SUPABASE_URL}/rest/v1/wellness_logs?on_conflict=client_id,log_date`, { method:'POST', headers:{...hdrs(CGEE_TOKEN),Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify(row) }).catch(()=>{}) }catch(e){ return Promise.resolve() }
+}
+
+function DemoModal({ url, title, onClose }){
+  const embed = ytEmbed(url)
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,zIndex:400,background:'rgba(4,7,15,0.88)',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:'100%',maxWidth:560,background:C.bg,border:`1px solid ${C.border}`,borderRadius:16,overflow:'hidden'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 14px',borderBottom:`1px solid ${C.border}`}}>
+          <span style={{fontSize:13,fontWeight:700,color:C.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{title||'Demo'}</span>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:22,cursor:'pointer',lineHeight:1}}>{'\u00D7'}</button>
+        </div>
+        {embed ? (
+          <div style={{position:'relative',width:'100%',paddingBottom:'56.25%',background:'#000'}}>
+            <iframe src={embed} title="demo" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen style={{position:'absolute',inset:0,width:'100%',height:'100%',border:'none'}}/>
+          </div>
+        ) : (
+          <div style={{padding:20,textAlign:'center'}}><a href={url} target="_blank" rel="noreferrer" style={{color:C.c3,fontSize:14,fontWeight:600}}>Open demo {'\u2197'}</a></div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── LEARNED NAMING RULES — derive convention rules from how the coach renames ──
 function getLearnedTerms(){ const r=loadExReg(); return r.terms||{impl:{},move:{}} }
 function _ntoks(str){ return (str||'').toLowerCase().replace(/[()]/g,' ').replace(/-/g,' ').split(/\s+/).filter(Boolean) }
@@ -850,7 +962,7 @@ function ClientOnboarding({ session, token, onCreated, onExit }) {
       <div style={{ maxWidth:380, width:'100%' }}>
         <div style={{ textAlign:'center', marginBottom:24 }}>
           <h1 style={{ fontSize:26, fontWeight:700, color:C.white, letterSpacing:'-0.02em', marginBottom:6 }}>Welcome</h1>
-          <p style={{ fontSize:14, color:C.muted }}>Let\u2019s set up your athlete profile.</p>
+          <p style={{ fontSize:14, color:C.muted }}>Let's set up your athlete profile.</p>
         </div>
         <Card style={{padding:24}}>
           <ErrBox msg={err}/>
@@ -2369,14 +2481,14 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     updateSession(sess.id, {exercises:newExs, status:newStatus, completed_at:completedAt})
   }
   const addEx     = () => { if(!eF.name.trim()) return; const d=deriveTargets(eF); saveExs([...exs,{id:uid(),...eF,...d,load:normalizeLbs(d.load),loggedSets:[]}]); setEF({...BLANK_EX,targets:[{reps:'8'},{reps:'8'},{reps:'8'}],targetCols:['reps']}); setAddingEx(false) }
-  const saveExEdit= () => { const d=deriveTargets(editExF); saveExs(exs.map(e=>e.id===editExId?{...editExF,...d,id:editExId,load:normalizeLbs(d.load),loggedSets:e.loggedSets}:e)); setEditExId(null) }
+  const saveExEdit= () => { const d=deriveTargets(editExF); const {_metaDesc,_metaYt,_pnote,...clean}=editExF; saveExs(exs.map(e=>e.id===editExId?{...clean,...d,id:editExId,load:normalizeLbs(d.load),loggedSets:e.loggedSets}:e)); if(_metaDesc!==undefined||_metaYt!==undefined) saveExMeta(editExF.name,{description:_metaDesc||'',youtube_url:_metaYt||''}); if(_pnote!==undefined) saveExPNote(programId, editExF.name, _pnote); setEditExId(null) }
   const delEx     = (id) => { if(!window.confirm('Delete exercise?')) return; saveExs(exs.filter(e=>e.id!==id)) }
   const dupEx     = (ex) => saveExs([...exs,{...ex,id:uid(),loggedSets:[]}])
   const moveEx    = (id,dir) => { const a=[...exs]; const i=a.findIndex(e=>e.id===id); if(i<0||(dir<0&&i===0)||(dir>0&&i===a.length-1)) return; [a[i],a[i+dir]]=[a[i+dir],a[i]]; saveExs(a) }
   const blockLetters = () => { const seen=[]; mainEx.forEach(e=>{ const L=(e.blockLabel||'').replace(/[^A-Za-z]/g,'').toUpperCase().charAt(0); if(L&&!seen.includes(L)) seen.push(L) }); return seen }
   const lastLetter = () => { const ls=blockLetters(); return ls.length?ls[ls.length-1]:'A' }
   const nextBlockLabel = (mode) => { const ABC='ABCDEFGHIJKLMNOPQRSTUVWXYZ'; if(mode==='super'){ const L=lastLetter(); const n=mainEx.filter(e=>(e.blockLabel||'').toUpperCase().charAt(0)===L).length; return L+(n+1) } const li=ABC.indexOf(lastLetter()); const L=mainEx.length?ABC[Math.min(li+1,25)]:'A'; return L+'1' }
-  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'] }); setQaName('') }
+  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], _metaDesc:(getExMeta(nm)||{}).description||'', _metaYt:(getExMeta(nm)||{}).youtube_url||'', _pnote:getExPNote(programId, nm) }); setQaName('') }
   const groupTypeName = (n) => n===1?'Single':n===2?'Superset':n===3?'Tri-set':'Circuit'
   const applyGroupColor = (ids,color) => { saveExs(exs.map(e=>ids.has(e.id)?{...e,labelColor:color||''}:e)); setColorPickerGroup(null) }
   const renameSection = (letter, name) => {
@@ -2426,7 +2538,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
       const recCols=['reps','load','rpe','rir','time','distance'].filter(k=> k==='reps' || (ex[k]&&String(ex[k]).trim()!==''))
       const nS=Math.max(1,parseInt(ex.sets)||1)
       const recT=(ex.targets&&ex.targets.length)?ex.targets:Array.from({length:nS},(_,i)=>{const r={};recCols.forEach(k=>{const a=sp(ex[k]);r[k]=a.length?(a[i]!==undefined?a[i]:a[a.length-1]):''});return r})
-      setEditExF({name:ex.name,blockLabel:ex.blockLabel||'',labelColor:ex.labelColor||'',sets:ex.sets||'',reps:ex.reps||'',load:ex.load||'',rpe:ex.rpe||'',tempo:ex.tempo||'',rest:ex.rest||'',notes:ex.notes||'',isWarmup:!!ex.isWarmup,sequenceGroup:ex.sequenceGroup||'',force_complete:!!ex.force_complete,videoUrl:ex.videoUrl||'',collect:ex.collect||(ex.isWarmup?['reps']:['reps','load']),sectionName:ex.sectionName||'',time:ex.time||'',distance:ex.distance||'',rir:ex.rir||'',perSide:ex.perSide||'default',targets:recT,targetCols:(ex.targetCols&&ex.targetCols.length)?ex.targetCols:(recCols.length?recCols:['reps'])})
+      setEditExF({name:ex.name,blockLabel:ex.blockLabel||'',labelColor:ex.labelColor||'',sets:ex.sets||'',reps:ex.reps||'',load:ex.load||'',rpe:ex.rpe||'',tempo:ex.tempo||'',rest:ex.rest||'',notes:ex.notes||'',isWarmup:!!ex.isWarmup,sequenceGroup:ex.sequenceGroup||'',force_complete:!!ex.force_complete,videoUrl:ex.videoUrl||'',collect:ex.collect||(ex.isWarmup?['reps']:['reps','load']),sectionName:ex.sectionName||'',time:ex.time||'',distance:ex.distance||'',rir:ex.rir||'',perSide:ex.perSide||'default',targets:recT,targetCols:(ex.targetCols&&ex.targetCols.length)?ex.targetCols:(recCols.length?recCols:['reps']),_metaDesc:(getExMeta(ex.name)||{}).description||'',_metaYt:(getExMeta(ex.name)||{}).youtube_url||'',_pnote:getExPNote(programId, ex.name)})
     }
 
     return (
@@ -2579,6 +2691,14 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
               </select>
             </div>
             <div style={{marginBottom:8}}><TA label="Coach Note" value={editExF.notes||''} onChange={v=>setEditExF(p=>({...p,notes:v}))} rows={2} placeholder="Cues, tempo focus, modifications…"/></div>
+            <div style={{marginBottom:10,padding:'11px 12px',background:C.ink,border:`1px solid ${C.c1}33`,borderRadius:10}}>
+              <div style={{fontSize:10,fontWeight:700,color:C.c3,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}}>Exercise info</div>
+              <div style={{fontSize:10.5,color:C.faint,marginBottom:9,lineHeight:1.4}}>Cues + demo stick to this exercise everywhere — every client, every program.</div>
+              <div style={{marginBottom:9}}><TA label="How to perform / cues" value={editExF._metaDesc||''} onChange={v=>setEditExF(p=>({...p,_metaDesc:v}))} rows={3} placeholder="Setup, key cues, common faults…"/></div>
+              <TI label="YouTube demo link (unlisted is fine)" value={editExF._metaYt||''} onChange={v=>setEditExF(p=>({...p,_metaYt:v}))} placeholder="https://youtu.be/…"/>
+              {(()=>{ const reqs=getVideoReqNames(editExF.name); if(!reqs.length) return null; return <div style={{marginTop:8,display:'flex',alignItems:'center',gap:6}}><span style={{width:7,height:7,borderRadius:'50%',background:C.amber,flexShrink:0}}/><span style={{fontSize:11,color:C.amber,fontWeight:600}}>Demo requested by {reqs.join(', ')}</span></div> })()}
+            </div>
+            <div style={{marginBottom:10}}><TA label="Note for this program (this athlete only)" value={editExF._pnote||''} onChange={v=>setEditExF(p=>({...p,_pnote:v}))} rows={2} placeholder="Stays on this exercise for this whole program."/></div>
             <div style={{display:'flex',gap:16,flexWrap:'wrap',marginBottom:10}}>
               <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',fontSize:12,color:C.muted}}>
                 <input type="checkbox" checked={!!editExF.isWarmup} onChange={e=>setEditExF(p=>({...p,isWarmup:e.target.checked}))} style={{accentColor:C.c2}}/>
@@ -2888,6 +3008,11 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
               {sess.date_label&&<span style={{fontSize:13,color:C.muted}}>{sess.date_label}</span>}
             </Row>
             {sess.notes&&<p style={{fontSize:13,color:C.dim,fontStyle:'italic'}}>{sess.notes}</p>}
+            {(sess.duration_seconds||sess.session_rpe) ? (<div style={{marginTop:8,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+              {sess.duration_seconds ? <span style={{fontSize:11,color:C.muted,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px'}}>{Math.round(sess.duration_seconds/60)} min</span> : null}
+              {sess.session_rpe ? <span style={{fontSize:11,fontWeight:700,color:C.amber,background:`${C.amber}14`,border:`1px solid ${C.amber}40`,borderRadius:7,padding:'3px 9px'}}>Session RPE {fmtN(sess.session_rpe)}</span> : null}
+            </div>) : null}
+            {sess.client_notes && <div style={{marginTop:8,background:`${C.c1}14`,border:`1px solid ${C.c1}40`,borderRadius:9,padding:'8px 11px'}}><div style={{fontSize:10,fontWeight:700,color:C.c3,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:3}}>From client</div><div style={{fontSize:12.5,color:C.white,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{sess.client_notes}</div></div>}
             <div style={{marginTop:8}}>
               <Row style={{justifyContent:'space-between',marginBottom:4}}>
                 <span style={{fontSize:11,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em'}}>Session progress</span>
@@ -6846,7 +6971,9 @@ function getSessionPBs(sessId, pbs){
   })
   return out
 }
-function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId }){
+function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId, clientName='' }){
+  const [demoUrl,setDemoUrl]=useState(null)
+  const [reqDone,setReqDone]=useState({})
   const exs = safeExercises(sess)
   const CFIELD = { reps:'completedReps', time:'completedTime', load:'completedLoad', rpe:'rpe', rir:'rir', distance:'completedDistance', speed:'speed', rpm:'rpm', power:'power', energy:'energy', hr:'hr', vas:'vas', band:'bandColour' }
   const MET = { load:'Weight', rpe:'RPE', rir:'RIR', distance:'Distance', speed:'Speed', rpm:'RPM', power:'Power', energy:'Energy', hr:'Heart rate', vas:'Pain', band:'Band' }
@@ -6921,7 +7048,24 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
   const totalSteps = steps.length
   const doneSteps = steps.filter(isStepDone).length
 
-  const advance = (restFrom)=>{ if(c<steps.length-1){ setCursor(c+1); if(restOn){ setRestUp(!restFrom); setRestTarget(parseT(restFrom)); setRestSec(0); setResting(true) } } else { onFinish&&onFinish() } }
+  const startRef = React.useRef(Date.now())
+  const [checkIn,setCheckIn]=useState(false)
+  const [chRpe,setChRpe]=useState(0)
+  const [chNote,setChNote]=useState('')
+  const [chMin,setChMin]=useState(0)
+  const openCheckIn = ()=>{ setChMin(Math.round((Date.now()-startRef.current)/60000)); setCheckIn(true) }
+  const doFinish = ()=>{
+    const dur = Math.max(0, Math.round(chMin*60))
+    const ns = computeSessionStatus(sess)
+    const patch = { duration_seconds: dur }
+    if(chRpe) patch.session_rpe = chRpe
+    if(chNote && chNote.trim()) patch.client_notes = chNote.trim()
+    if(ns!=='complete'){ patch.status='manual_complete'; patch.completed_at=new Date().toISOString() }
+    updateSession(sess.id, patch)
+    setCheckIn(false)
+    onFinish&&onFinish()
+  }
+  const advance = (restFrom)=>{ if(c<steps.length-1){ setCursor(c+1); if(restOn){ setRestUp(!restFrom); setRestTarget(parseT(restFrom)); setRestSec(0); setResting(true) } } else { openCheckIn() } }
   const writeSet = (extra)=>{
     const ls=[...(ex.loggedSets||[])]; const idx=ls.findIndex(x=>x.setNumber===setNum)
     const base = idx>=0?ls[idx]:{id:uid(),setNumber:setNum}
@@ -6943,7 +7087,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
     writeSet(e); advance(ex.rest)
   }
   const jumpToEx = (exIndex)=>{ setResting(false); for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex && !isStepDone(steps[k])){ setCursor(k); return } } for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex){ setCursor(k); return } } }
-  const finish = ()=>{ const ns=computeSessionStatus(sess); if(ns!=='complete') updateSession(sess.id,{status:'manual_complete',completed_at:new Date().toISOString()}); onFinish&&onFinish() }
+  const finish = ()=>{ openCheckIn() }
 
   const tx = React.useRef(null)
   const onTouchStart = e => { tx.current = e.touches[0].clientX }
@@ -7015,6 +7159,14 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
             <div style={{fontSize:13,color:C.white,fontWeight:600}}>Target: <span style={{color:'rgba(255,255,255,0.92)'}}>{prescLine||'—'}</span></div>
             {ex.rest&&<div style={{fontSize:11,color:C.faint,marginTop:3}}>Rest {ex.rest}</div>}
             {ex.notes&&<div style={{fontStyle:'italic',fontSize:12,color:C.muted,borderLeft:`2px solid ${C.amber}66`,paddingLeft:8,marginTop:10}}>{ex.notes}</div>}
+            {(()=>{ const meta=getExMeta(ex.name); if(!meta||(!meta.description&&!meta.youtube_url)) return null; return (
+              <div style={{marginTop:10,display:'flex',flexDirection:'column',gap:8}}>
+                {meta.description && <div style={{fontSize:12,color:C.muted,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{meta.description}</div>}
+                {meta.youtube_url && <button onClick={()=>setDemoUrl(meta.youtube_url)} style={{alignSelf:'flex-start',display:'flex',alignItems:'center',gap:6,background:`${C.c1}1A`,border:`1px solid ${C.c1}55`,borderRadius:8,padding:'7px 12px',color:C.c3,fontSize:12,fontWeight:700,cursor:'pointer'}}>{'\u25B6'} Watch demo</button>}
+              </div>
+            )})()}
+            {(()=>{ const pn=getExPNote(sess&&sess.program_id, ex.name); if(!pn) return null; return (<div style={{marginTop:10,background:`${C.amber}10`,border:`1px solid ${C.amber}40`,borderRadius:10,padding:'10px 12px'}}><div style={{fontSize:10,fontWeight:700,color:C.amber,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>Note from your coach</div><div style={{fontSize:12.5,color:C.white,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{pn}</div></div>) })()}
+            {(()=>{ const m=getExMeta(ex.name); const hasVid=m&&(m.youtube_url||m.video_url); if(isWarm||hasVid) return null; const done=reqDone[ex.name]||hasRequestedVideo(ex.name,clientId); return (<button disabled={!!done} onClick={()=>{ if(done) return; requestVideo(ex.name,clientId,clientName); setReqDone(prev=>({...prev,[ex.name]:true})) }} style={{display:'inline-block',marginTop:10,background:'transparent',border:`1px dashed ${C.border}`,borderRadius:8,padding:'7px 12px',color:done?C.green:C.muted,fontSize:11.5,fontWeight:600,cursor:done?'default':'pointer'}}>{done?'Demo requested \u2713':'No demo yet \u2014 request one'}</button>) })()}
           </div>
 
           {isWarm ? (
@@ -7068,17 +7220,61 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
         <span style={{color:C.faint,fontSize:11}}>·</span>
         <button onClick={()=>{setRestOn(o=>!o);setResting(false)}} style={{background:'none',border:'none',color:restOn?C.amber:C.muted,fontSize:12,cursor:'pointer',padding:0}}>Rest timer: {restOn?'on':'off'}</button>
       </div>
+      {checkIn && (
+        <div style={{position:'fixed',inset:0,zIndex:600,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+          <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+            <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',marginBottom:4}}>Nice work!</h2>
+            <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:16}}>
+              <span style={{fontSize:13,color:C.muted}}>Time taken</span>
+              <button onClick={()=>setChMin(m=>Math.max(0,m-5))} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>-</button>
+              <input type="number" value={chMin} onChange={e=>setChMin(Math.max(0,parseInt(e.target.value)||0))} style={{width:52,textAlign:'center',background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'8px 4px',color:C.white,fontSize:15,fontWeight:700,fontFamily:'Space Grotesk,sans-serif'}}/>
+              <span style={{fontSize:13,color:C.muted}}>min</span>
+              <button onClick={()=>setChMin(m=>m+5)} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>+</button>
+            </div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:14}}>How hard was the whole session?</div>
+            <div style={{display:'flex',gap:5,marginBottom:6}}>{[1,2,3,4,5,6,7,8,9,10].map(n=>(<button key={n} onClick={()=>setChRpe(n)} style={{flex:1,padding:'11px 0',borderRadius:8,border:`1px solid ${chRpe===n?C.amber:C.border}`,background:chRpe===n?C.amber:'transparent',color:chRpe===n?C.bg:C.muted,fontWeight:700,fontSize:13,cursor:'pointer'}}>{n}</button>))}</div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:C.faint,marginBottom:16}}><span>Easy</span><span>Max effort</span></div>
+            <textarea value={chNote} onChange={e=>setChNote(e.target.value)} placeholder="Anything to tell your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:62,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={doFinish} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:11,padding:'13px 18px',color:C.muted,fontWeight:600,fontSize:13.5,cursor:'pointer'}}>Skip</button>
+              <button onClick={doFinish} style={{flex:1,background:C.amber,color:C.bg,border:'none',borderRadius:11,padding:'13px',fontWeight:700,fontSize:14.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Finish session</button>
+            </div>
+          </div>
+        </div>
+      )}
       {histEx && <ExerciseHistoryModal exerciseName={histEx} clientId={clientId} sessions={sessions} weeks={weeks} programs={programs} onClose={()=>setHistEx(null)}/>}
+      {demoUrl && <DemoModal url={demoUrl} title="Exercise demo" onClose={()=>setDemoUrl(null)}/>}
     </div>
   )
 }
 
-function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits }){
+function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits, updateSession, clientId, clientName }){
   const exs = safeExercises(sess)
   const [mode,setMode] = useState('guided')
   const [restOn,setRestOn] = useState(true)
+  const [demoUrl,setDemoUrl]=useState(null)
+  const [reqDone,setReqDone]=useState({})
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
+  const _hasData = (z) => ['completedReps','completedLoad','completedTime','completedDistance','speed','rpm','power','energy','hr','bandColour'].some(k=>z&&z[k]!=null&&String(z[k]).trim()!=='')
+  const toggleWarm = (exId, sn) => {
+    if(!updateSession) return
+    const newExs = exs.map(e=>{
+      if(e.id!==exId) return e
+      const ls = e.loggedSets||[]
+      const cur = ls.find(z=>z.setNumber===sn)
+      let next
+      if(cur && cur.manualDone){
+        next = _hasData(cur) ? ls.map(z=>z.setNumber===sn?{...z,manualDone:false}:z) : ls.filter(z=>z.setNumber!==sn)
+      } else if(cur){
+        next = ls.map(z=>z.setNumber===sn?{...z,manualDone:true}:z)
+      } else {
+        next = [...ls, {id:uid(), setNumber:sn, manualDone:true}]
+      }
+      return {...e, loggedSets:next}
+    })
+    updateSession(sess.id, {exercises:newExs})
+  }
   const tgt = (src, idx) => { if(src==null) return ''; const parts=String(src).split('/').map(z=>z.trim()).filter(Boolean); return parts.length>1?(parts[Math.min(idx,parts.length-1)]||''):(parts[0]||String(src).trim()) }
   const meta = status==='complete' ? {label:'Complete', color:C.green, icon:'check'} : status==='inprogress' ? {label:'In progress', color:C.amber, icon:'clock'} : {label:'Not started', color:C.faint, icon:'play'}
   const btnLabel = status==='notstarted' ? 'Start session' : 'Resume session'
@@ -7090,6 +7286,10 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           {programName && <span style={{fontSize:12,color:C.muted}}>{programName}</span>}
           <span style={{display:'flex',alignItems:'center',gap:5,background:`${meta.color}1A`,color:meta.color,fontSize:11,fontWeight:700,padding:'4px 10px',borderRadius:999}}><Icon name={meta.icon} size={12} color={meta.color}/>{meta.label}</span>
         </div>
+        {(sess.duration_seconds||sess.session_rpe) ? (<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+          {sess.duration_seconds ? <span style={{fontSize:11,color:C.muted,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px'}}>{Math.round(sess.duration_seconds/60)} min</span> : null}
+          {sess.session_rpe ? <span style={{fontSize:11,fontWeight:700,color:C.amber,background:`${C.amber}14`,border:`1px solid ${C.amber}40`,borderRadius:7,padding:'3px 9px'}}>Session RPE {fmtN(sess.session_rpe)}</span> : null}
+        </div>) : null}
       </div>
       {pbHits && pbHits.length>0 && (
         <div style={{background:`${C.gold}12`,border:`1px solid ${C.gold}55`,borderRadius:12,padding:'13px 15px',marginBottom:16}}>
@@ -7141,6 +7341,12 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           return (
             <div key={ex.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 14px'}}>
               <div style={{fontSize:14,fontWeight:600,color:C.white,marginBottom:8}}>{ex.name}</div>
+              {(()=>{ const meta=getExMeta(ex.name); if(!meta) return null; return (<>
+                {meta.description && <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginBottom:8,whiteSpace:'pre-wrap'}}>{meta.description}</div>}
+                {meta.youtube_url && <button onClick={()=>setDemoUrl(meta.youtube_url)} style={{display:'inline-flex',alignItems:'center',gap:5,background:`${C.c1}1A`,border:`1px solid ${C.c1}55`,borderRadius:7,padding:'4px 10px',color:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',marginBottom:8}}>{'\u25B6'} Watch demo</button>}
+              </>)})()}
+              {(()=>{ const pn=getExPNote(sess&&sess.program_id, ex.name); if(!pn) return null; return (<div style={{background:`${C.amber}10`,border:`1px solid ${C.amber}40`,borderRadius:9,padding:'9px 11px',marginBottom:8}}><div style={{fontSize:9.5,fontWeight:700,color:C.amber,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Note from your coach</div><div style={{fontSize:12,color:C.white,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{pn}</div></div>) })()}
+              {(()=>{ const m=getExMeta(ex.name); const hasVid=m&&(m.youtube_url||m.video_url); if(hasVid) return null; const done=reqDone[ex.name]||hasRequestedVideo(ex.name,clientId); return (<button disabled={!!done} onClick={()=>{ if(done) return; requestVideo(ex.name,clientId,clientName); setReqDone(prev=>({...prev,[ex.name]:true})) }} style={{display:'inline-block',marginBottom:8,background:'transparent',border:`1px dashed ${C.border}`,borderRadius:7,padding:'5px 10px',color:done?C.green:C.muted,fontSize:11,fontWeight:600,cursor:done?'default':'pointer'}}>{done?'Demo requested \u2713':'No demo yet \u2014 request one'}</button>) })()}
               <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
                 {sets.map(sn=>{
                   const ls=(ex.loggedSets||[]).find(z=>z.setNumber===sn)
@@ -7166,7 +7372,36 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           )
         })}
       </div>
-      {warm.length>0 && <div style={{fontSize:11,color:C.faint,marginTop:12,textAlign:'center'}}>+ {warm.length} warm-up movement{warm.length!==1?'s':''}</div>}
+      {warm.length>0 && (
+        <div style={{marginTop:18}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>Warm-up / movement prep</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {warm.map(ex=>{
+              const N=Math.max(1,parseInt(ex.sets)||1)
+              const rounds=Array.from({length:N},(_,i)=>i+1)
+              return (
+                <div key={ex.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:600,color:C.white}}>{ex.name}</div>
+                    {(ex.reps||ex.tempo) && <div style={{fontSize:11,color:C.muted,marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[ex.reps,ex.tempo].filter(Boolean).join(' · ')}</div>}
+                  </div>
+                  <div style={{display:'flex',gap:6,flexShrink:0}}>
+                    {rounds.map(sn=>{
+                      const ls=(ex.loggedSets||[]).find(z=>z.setNumber===sn)
+                      const done=!!(ls&&ls.manualDone)
+                      return (
+                        <button key={sn} onClick={()=>toggleWarm(ex.id,sn)} title={N>1?('Round '+sn):'Done'} style={{width:30,height:30,borderRadius:8,border:`1.5px solid ${done?C.green:C.faint}`,background:done?`${C.green}1A`:'transparent',color:done?C.green:C.faint,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:700,padding:0,lineHeight:1}}>{done?'\u2713':(N>1?sn:'')}</button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div style={{fontSize:10,color:C.faint,textAlign:'center',marginTop:8}}>Tick each round as you go - warm-ups don't count toward your completion %.</div>
+        </div>
+      )}
+      {demoUrl && <DemoModal url={demoUrl} title="Exercise demo" onClose={()=>setDemoUrl(null)}/>}
     </div>
   )
 }
@@ -7336,6 +7571,9 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
       {field('Sport / focus', txt('sport','Rugby, general strength, etc.'))}
     </>)}
 
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'4px 16px',marginBottom:14}}>
+      <Toggle value={!!client.wellness_enabled} onChange={v=>save({wellness_enabled:v})} label="Daily readiness check-in" sublabel="Log sleep, energy, soreness, stress and mood each day for your coach"/>
+    </div>
     {section('health','alert','Health screen', <>
       <div style={{fontSize:11,color:C.faint,marginBottom:10,lineHeight:1.45}}>A quick safety check so your coach can train you appropriately. Your answers are private to your coach.</div>
       {HS_ITEMS.map(it=>(
@@ -7621,6 +7859,154 @@ function ClientMeasurements({ clientId, measurements, addMeasurement, deleteMeas
 }
 
 
+function ClientWalkthrough({ onClose }){
+  const [step,setStep]=useState(0)
+  const pS={fontSize:13.5,color:C.muted,lineHeight:1.6,marginBottom:12}
+  const blk={marginBottom:14}
+  const bH={display:'block',fontSize:13.5,color:C.amber,fontWeight:700,marginBottom:3,fontFamily:'Space Grotesk,sans-serif'}
+  const bB={fontSize:13,color:C.muted,lineHeight:1.55}
+  const ulS={margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:10}
+  const liS={fontSize:13,color:C.muted,lineHeight:1.55}
+  const GLOSS=[
+    ['ea','each side (8ea = 8 reps per side)'],
+    ['AMRAP','as many reps as possible — go to failure'],
+    ['ASAP','as slow as possible'],
+    ['ALAP','as long as possible (holds)'],
+    ['DROP','drop set — reduce the weight and keep going'],
+    ['+ 2 / partials','extra forced or partial-range reps after your set'],
+    ['+ ECC','added eccentric (lowering-only) reps'],
+    ['ISO','isometric — hold the position'],
+    ['Tempo (e.g. 3-1-X)','seconds per phase; X means explosive'],
+    ['sec / m','seconds / metres'],
+    ['RPE','how hard it felt, 1-10 (10 = no reps left)'],
+    ['RIR','reps in reserve (2 = could have done 2 more)'],
+    ['Band colour','log the resistance band colour you used'],
+  ]
+  const steps=[
+    { t:'Welcome!', c:(<>
+      <p style={pS}>Thank you for letting me program for you! I KNOW we can make some SERIOUS gainz across the board — in fact I am so confident that I will pay your gym membership if you do not.</p>
+      <p style={pS}>We are working with a few challenges: programming for a gym I have never been in, for someone I have never trained, without coaching you through each session in person. This is where you come in.</p>
+    </>)},
+    { t:'My one rule: HELP ME HELP YOU', c:(<>
+      <p style={pS}>If anything is not working — you do not understand an exercise, it is too hard, too easy, painful, boring, sessions feel too long, there is not enough equipment, you are losing motivation, or your goals change — I want to hear about it.</p>
+      <p style={pS}>No issue is too small. I can only find a better option if I know about it, and I promise you will not hurt my feelings. Tell me the good stuff too — what you love and where you are seeing progress. That guides your next program = more gainzzz.</p>
+    </>)},
+    { t:'How your session is built', c:(<>
+      <div style={blk}><b style={bH}>Release and Grease</b><span style={bB}>Done before every session — nothing crazy, just getting you moving before lifting heavy.</span></div>
+      <div style={blk}><b style={bH}>A1 — your key lift</b><span style={bB}>The meat and potatoes. You are fresh, so weight and intent are through the roof. Train within ~2 reps of failure (gun to your head, you could not do more than 2 more) — that is where the best adaptation happens. You have more in the tank than you think.</span></div>
+      <div style={blk}><b style={bH}>A2 — protects your A1</b><span style={bB}>Usually an accessory or mobility move that lets you recover before the next max effort. It is not a waste of time — approach it with the same intent.</span></div>
+    </>)},
+    { t:'A few key rules', c:(<>
+      <ul style={ulS}>
+        <li style={liS}>Take 1-2 warm-up sets on your A1 (and maybe 1 on B1) that do not count as working sets. Otherwise no added volume — more is not always better.</li>
+        <li style={liS}>Do not roll sessions into the next week. If you do not finish a week, start the new one fresh.</li>
+        <li style={liS}>Track your weights — it helps me, and lets you beat last week. Dumbbells? Log one DB weight. Barbell? Include the bar.</li>
+        <li style={liS}>Short on time? Prioritise your A1 and B1 lifts. A 15-minute session beats none.</li>
+      </ul>
+    </>)},
+    { t:'How to read your program', c:(<>
+      <p style={{...pS,marginBottom:12}}>The shorthand you will see in your sessions:</p>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {GLOSS.map(([term,def])=>(<div key={term} style={{display:'flex',gap:10}}><span style={{flexShrink:0,minWidth:98,fontSize:12,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif'}}>{term}</span><span style={{fontSize:12.5,color:C.muted,lineHeight:1.45}}>{def}</span></div>))}
+      </div>
+    </>)},
+    { t:'Logging your training', c:(<>
+      <ul style={ulS}>
+        <li style={liS}>Start a session from Home. <b style={{color:C.white}}>Guided</b> walks you through set by set with a rest timer; <b style={{color:C.white}}>Manual</b> shows the whole session to log freely.</li>
+        <li style={liS}>Enter your weight and reps; if a box asks for RPE or RIR, add it. Tap to log each set.</li>
+        <li style={liS}>Tick off your warm-ups as you go.</li>
+        <li style={liS}>Tap <b style={{color:C.c3}}>Watch demo</b> if a video is attached — or <b style={{color:C.c3}}>request one</b> and I will film it.</li>
+        <li style={liS}>Message me anytime from the chat tab. Remember the rule: help me help you!</li>
+      </ul>
+    </>)},
+  ]
+  const last = step===steps.length-1
+  const cur = steps[step]
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:500,background:'rgba(4,7,15,0.9)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px 10px'}}>
+          <div style={{display:'flex',gap:5}}>{steps.map((_,i)=>(<span key={i} style={{width:i===step?20:7,height:7,borderRadius:99,background:i===step?C.amber:(i<step?`${C.amber}66`:C.lift),transition:'all .2s'}}/>))}</div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,fontWeight:600,cursor:'pointer'}}>{last?' ':'Skip'}</button>
+        </div>
+        <div style={{padding:'4px 18px 8px',overflowY:'auto'}}>
+          <h2 style={{fontSize:20,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'-0.01em',marginBottom:12}}>{cur.t}</h2>
+          {cur.c}
+        </div>
+        <div style={{display:'flex',gap:10,padding:'12px 18px 22px',borderTop:`1px solid ${C.border}`,marginTop:'auto'}}>
+          {step>0 && <button onClick={()=>setStep(step-1)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:11,padding:'13px 18px',color:C.white,fontWeight:700,fontSize:14,cursor:'pointer'}}>Back</button>}
+          <button onClick={()=>last?onClose():setStep(step+1)} style={{flex:1,background:C.amber,color:C.bg,border:'none',borderRadius:11,padding:'13px',fontWeight:700,fontSize:14.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>{last?'Let us go':'Next'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WellnessCheckIn({ clientId, existing, onClose, onDone }){
+  const init = existing||{}
+  const [v,setV]=useState({ sleep:init.sleep||0, energy:init.energy||0, soreness:init.soreness||0, stress:init.stress||0, mood:init.mood||0, pain_flag:!!init.pain_flag, notes:init.notes||'' })
+  const set=(k,val)=>setV(p=>({...p,[k]:val}))
+  const METRICS=[ ['sleep','Sleep','Poor','Great'], ['energy','Energy','Low','High'], ['mood','Mood','Low','Great'], ['soreness','Soreness','None','Very sore'], ['stress','Stress','Calm','Stressed'] ]
+  const submit=()=>{ saveWellness(clientId, { sleep:v.sleep||null, energy:v.energy||null, soreness:v.soreness||null, stress:v.stress||null, mood:v.mood||null, pain_flag:v.pain_flag, notes:(v.notes||'').trim()||null }); onDone&&onDone() }
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:600,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',overflowY:'auto',padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+          <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>How are you feeling?</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer'}}>Close</button>
+        </div>
+        <div style={{fontSize:12.5,color:C.muted,marginBottom:18}}>Tap a number, 1 (low) to 5 (high).</div>
+        {METRICS.map(([k,label,lo,hi])=>(
+          <div key={k} style={{marginBottom:16}}>
+            <div style={{fontSize:13,fontWeight:700,color:C.white,marginBottom:6}}>{label}</div>
+            <div style={{display:'flex',gap:6}}>{[1,2,3,4,5].map(n=>(<button key={n} onClick={()=>set(k,n)} style={{flex:1,padding:'11px 0',borderRadius:8,border:`1px solid ${v[k]===n?C.amber:C.border}`,background:v[k]===n?C.amber:'transparent',color:v[k]===n?C.bg:C.muted,fontWeight:700,fontSize:13,cursor:'pointer'}}>{n}</button>))}</div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:9.5,color:C.faint,marginTop:4}}><span>{lo}</span><span>{hi}</span></div>
+          </div>
+        ))}
+        <button onClick={()=>set('pain_flag',!v.pain_flag)} style={{width:'100%',display:'flex',alignItems:'center',gap:9,background:v.pain_flag?`${C.orange}18`:C.card,border:`1px solid ${v.pain_flag?C.orange:C.border}`,borderRadius:10,padding:'12px 14px',marginBottom:16,cursor:'pointer'}}>
+          <span style={{width:18,height:18,borderRadius:5,border:`2px solid ${v.pain_flag?C.orange:C.muted}`,background:v.pain_flag?C.orange:'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:C.bg,fontSize:12,fontWeight:900}}>{v.pain_flag?'\u2713':''}</span>
+          <span style={{fontSize:13,fontWeight:600,color:v.pain_flag?C.orange:C.white,textAlign:'left'}}>I have pain or an injury to flag</span>
+        </button>
+        <textarea value={v.notes} onChange={e=>set('notes',e.target.value)} placeholder="Anything else for your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:60,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
+        <button onClick={submit} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>{existing?'Update check-in':'Submit check-in'}</button>
+      </div>
+    </div>
+  )
+}
+function ReadinessDash({ clients, go }){
+  const enabled = (clients||[]).filter(c=>c.wellness_enabled)
+  const rows = enabled.map(c=>{ const logs=getWellnessFor(c.id,7); const latest=logs[0]; return { c, latest, sc: wellnessScore(latest), logs } }).sort((a,b)=>{ if(a.sc==null) return 1; if(b.sc==null) return -1; return a.sc-b.sc })
+  return (
+    <div style={{padding:20,maxWidth:900,margin:'0 auto'}}>
+      <h1 style={{fontSize:24,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'-0.01em',marginBottom:4}}>Readiness</h1>
+      <p style={{fontSize:13,color:C.muted,marginBottom:22}}>Daily wellness check-ins from athletes with readiness enabled. Lowest scores first.</p>
+      {enabled.length===0 ? (
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'30px 22px',textAlign:'center'}}>
+          <div style={{fontSize:15,fontWeight:700,color:C.white,marginBottom:6,fontFamily:'Space Grotesk,sans-serif'}}>No readiness check-ins yet</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:16}}>Turn on the daily readiness check-in for a client from their profile, and their scores will show up here.</div>
+          <Btn label="View clients" onClick={()=>go('clients')}/>
+        </div>
+      ) : (
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {rows.map(({c,latest,sc,logs})=>(
+            <div key={c.id} onClick={()=>go('client',{clientId:c.id})} style={{display:'flex',alignItems:'center',gap:14,background:C.card,border:`1px solid ${latest&&latest.pain_flag?`${C.orange}55`:C.border}`,borderRadius:14,padding:'15px 17px',cursor:'pointer'}}>
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',minWidth:48}}>
+                <span style={{fontSize:24,fontWeight:700,color:sc!=null?trafficColor(sc):C.faint,fontFamily:'Space Grotesk,sans-serif'}}>{sc!=null?sc:'--'}</span>
+                <span style={{fontSize:8.5,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>ready</span>
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:14.5,fontWeight:700,color:C.white}}>{c.name}</span>{latest&&latest.pain_flag&&<span style={{fontSize:10,fontWeight:700,color:C.orange,background:`${C.orange}1A`,borderRadius:6,padding:'2px 7px'}}>PAIN</span>}</div>
+                <div style={{fontSize:11.5,color:C.muted,marginTop:3}}>{latest?`Last check-in ${latest.log_date}`:'No check-ins yet'}</div>
+              </div>
+              <div style={{display:'flex',gap:3,alignItems:'flex-end',height:30}}>{logs.slice(0,7).reverse().map((l,i)=>{ const s2=wellnessScore(l); const h=s2!=null?Math.max(4,Math.round(s2/100*28)):4; return <span key={i} title={l.log_date} style={{width:6,height:h,borderRadius:2,background:s2!=null?trafficColor(s2):C.lift}}/> })}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, deleteMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false, coachName:coachNameProp='' }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
@@ -7634,6 +8020,9 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const openSess = (id, full=false) => { setSessionFull(!!full); setGuided(false); setOpenSessionId(id) }
   const [progressEx, setProgressEx] = useState(null)
   const [showStreak, setShowStreak] = useState(false)
+  const [showGuide, setShowGuide] = useState(false)
+  const [wlOpen, setWlOpen] = useState(false)
+  const [wlTick, setWlTick] = useState(0)
 
   const sessDone = s => { try { return computeSessionStatus(s)==='complete' } catch(e){} return s.status==='completed' }
   const sessSkipped = s => s.status==='skipped'
@@ -7753,8 +8142,8 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
               const _exs=safeExercises(sess)
               const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
               const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
-              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
-              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}}/>
+              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} clientName={client&&client.name} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}} updateSession={updateSession} clientId={client.id} clientName={client.name}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
@@ -7771,12 +8160,14 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   return (
     <div style={{background:C.bg,minHeight:'100vh',color:C.white,fontSize:14}}>
       <PreviewBanner client={client} onExit={onExit} isRealClient={isRealClient}/>
+      {(showGuide || (isRealClient && !client.onboarded)) && <ClientWalkthrough onClose={()=>{ setShowGuide(false); if(isRealClient && !client.onboarded){ try{ updateClient(client.id,{onboarded:true}) }catch(e){} } }}/>}
+{wlOpen && <WellnessCheckIn clientId={client.id} existing={getWellnessToday(client.id)} onClose={()=>setWlOpen(false)} onDone={()=>{ setWlOpen(false); setWlTick(t=>t+1) }}/>}
       <div style={{maxWidth:560, margin:'0 auto', padding:'20px 16px 96px'}}>
 
         {/* ────── HOME ────── */}
         {tab==='home' && (<>
           <div style={{marginBottom:20}}>
-            <h1 style={{fontSize:26,fontWeight:600,color:C.white,letterSpacing:'-0.01em',marginBottom:6}}>{greeting}</h1>
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10}}><h1 style={{fontSize:26,fontWeight:600,color:C.white,letterSpacing:'-0.01em',marginBottom:6}}>{greeting}</h1><button onClick={()=>setShowGuide(true)} title="How to use this app" style={{flexShrink:0,marginTop:5,background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'6px 11px',color:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>? Guide</button></div>
             <div style={{fontSize:11,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'0.12em'}}>{todayStr}</div>
           </div>
 
@@ -7786,6 +8177,18 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
               <span style={{fontSize:12.5,color:C.orange,fontWeight:600}}>Pain flagged — train within comfort and log anything that bothers you.</span>
             </div>
           )}
+
+          {client.wellness_enabled && (()=>{ const w=getWellnessToday(client.id); const sc=wellnessScore(w); return w ? (
+            <div onClick={()=>setWlOpen(true)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'14px 16px',marginBottom:18,cursor:'pointer'}}>
+              <div><div style={{fontSize:13,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>Readiness logged today</div><div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Tap to update</div></div>
+              {sc!=null && <div style={{display:'flex',flexDirection:'column',alignItems:'center'}}><span style={{fontSize:20,fontWeight:700,color:trafficColor(sc),fontFamily:'Space Grotesk,sans-serif'}}>{sc}</span><span style={{fontSize:9,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>ready</span></div>}
+            </div>
+          ) : (
+            <button onClick={()=>setWlOpen(true)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,background:`${C.c1}14`,border:`1px solid ${C.c1}45`,borderRadius:14,padding:'15px 16px',marginBottom:18,cursor:'pointer',textAlign:'left'}}>
+              <div><div style={{fontSize:13.5,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>How are you feeling today?</div><div style={{fontSize:11.5,color:C.c3,marginTop:2}}>Quick readiness check-in</div></div>
+              <span style={{fontSize:22,color:C.c3,lineHeight:1}}>›</span>
+            </button>
+          ) })()}
 
           {/* Stat cards: weekly ring + streak */}
           <div style={{display:'flex',gap:10,marginBottom:22}}>
@@ -7910,9 +8313,15 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
             </div>
           ) : (
             <div style={{marginBottom:22,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'26px 20px',textAlign:'center'}}>
-              <Icon name="check" size={24} color={C.green}/>
-              <div style={{fontSize:14,fontWeight:600,color:C.white,margin:'10px 0 4px'}}>Nothing scheduled today</div>
-              <div style={{fontSize:12,color:C.faint,fontStyle:'italic'}}>Rest up — your next session will appear here.</div>
+              {programs.length===0 ? (<>
+                <div style={{fontSize:15,fontWeight:700,color:C.white,margin:'2px 0 5px',fontFamily:'Space Grotesk,sans-serif'}}>Welcome aboard!</div>
+                <div style={{fontSize:12.5,color:C.muted,lineHeight:1.5,marginBottom:14}}>Your coach is building your program — it will show up here as soon as it is ready. In the meantime, here is how everything works.</div>
+                <button onClick={()=>setShowGuide(true)} style={{background:C.amber,color:C.bg,border:'none',borderRadius:10,padding:'11px 20px',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Show me around</button>
+              </>) : (<>
+                <Icon name="check" size={24} color={C.green}/>
+                <div style={{fontSize:14,fontWeight:600,color:C.white,margin:'10px 0 4px'}}>Nothing scheduled today</div>
+                <div style={{fontSize:12,color:C.faint,fontStyle:'italic'}}>Rest up — your next session will appear here.</div>
+              </>)}
             </div>
           )}
 
@@ -8382,6 +8791,10 @@ function MainApp({ session, onSignOut }) {
       try{
         CGEE_TOKEN = token
         await hydrateExReg(token)
+        await hydrateExMeta(token)
+        await hydrateExPNotes(token)
+        await hydrateVideoReqs(token)
+        await hydrateWellness(token)
         const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl,cprof] = await Promise.all([
           sb.get('clients','select=*',token), sb.get('programs','select=*',token),
           sb.get('program_weeks','select=*',token), sb.get('sessions','select=*',token),
@@ -8682,6 +9095,7 @@ function MainApp({ session, onSignOut }) {
             {['templates','templates_program','templates_session','templates_scheme','templates_labels','name_convention'].includes(nav.view) && <TemplatesView sessions={sessions} programs={programs} weeks={weeks} clients={clients} addProgram={props.addProgram} addWeek={props.addWeek} addSession={props.addSession} go={go} templates={templates} addTemplate={addTemplate} deleteTemplate={deleteTemplate} updateTemplate={updateTemplate} initialTab={nav.view==='templates_session'?'session':nav.view==='templates_scheme'?'rep_scheme':nav.view==='templates_labels'?'label':'program'}/>}
             {nav.view==='compliance'          && <CompliancePage {...props}/>}
             {nav.view==='alerts'               && <AlertsPage {...props}/>}
+            {nav.view==='readiness_dash'       && <ReadinessDash clients={clients} go={go}/>}
             {nav.view==='programs_list'        && <ProgramsListPage {...props}/>}
             {nav.view==='sessions_list'        && <SessionsListPage {...props}/>}
             {nav.view==='lb_strength'          && <StrengthLeaderboard {...props}/>}
@@ -8709,7 +9123,7 @@ function MainApp({ session, onSignOut }) {
             {nav.view==='permissions'          && <CoachesAdminPage/>}
             {nav.view==='direct_messages'      && <ChatsPage mode="dm" chats={chats} chatMessages={chatMessages} clients={clients} addChat={addChat} addChatMessage={addChatMessage} deleteChat={deleteChat} unreadFor={(id)=>chatUnread(id,'coach')} markChatRead={(id)=>markChatRead(id,'coach')}/>}
             {nav.view==='group_chats'          && <ChatsPage mode="group" chats={chats} chatMessages={chatMessages} clients={clients} addChat={addChat} addChatMessage={addChatMessage} deleteChat={deleteChat} unreadFor={(id)=>chatUnread(id,'coach')} markChatRead={(id)=>markChatRead(id,'coach')}/>}
-            {!['overview','dashboard','clients','client','editclient','program','session','library','cleanup','import','calendar','templates','compliance','alerts','programs_list','sessions_list','lb_strength','lb_attendance','lb_wellness','lb_sprint','injuries','monitoring','athlete_reports','compliance_reports','export_centre','testing_reports','groups','events','announcements','team_updates','integrations','wearables','connected_apps','settings','db_tools','lbs_convert','coaches','permissions','direct_messages','group_chats','templates_program','templates_session','templates_scheme','templates_labels'].includes(nav.view)&&(<ComingSoon view={nav.view} go={go}/>)}
+            {!['overview','dashboard','clients','client','editclient','program','session','library','cleanup','import','calendar','templates','compliance','alerts','readiness_dash','programs_list','sessions_list','lb_strength','lb_attendance','lb_wellness','lb_sprint','injuries','monitoring','athlete_reports','compliance_reports','export_centre','testing_reports','groups','events','announcements','team_updates','integrations','wearables','connected_apps','settings','db_tools','lbs_convert','coaches','permissions','direct_messages','group_chats','templates_program','templates_session','templates_scheme','templates_labels'].includes(nav.view)&&(<ComingSoon view={nav.view} go={go}/>)}
           </ErrorBoundary>
         </div>
       </div>
