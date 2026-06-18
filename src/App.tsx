@@ -94,7 +94,7 @@ const _densityPad = { compact:'8px 12px', standard:'14px 16px', spacious:'22px 2
 // Three surface levels create depth without heavy borders.
 // Slight blue undertone (cool, premium) instead of pure neutral black.
 const C = {
-  bg:'#040814', ink:'#080D1C', card:'#0F1525', lift:'#1A2236',
+  bg:'#040814', midnight:'#0B1020', ink:'#080D1C', card:'#0F1525', lift:'#1A2236',
   white:'#FFFFFF', c1:'#2563EB', c2:'#3B82F6', c3:'#93C5FD',
   amber:_SC.accentColor||'#FFA500', gold:'#FACC15', red:'#EF4444', orange:'#F97316',
   green:'#22C55E', purple:'#8B5CF6',
@@ -393,10 +393,10 @@ const safeExercises = (sess) => {
 // count as done without requiring weight entry
 
 
-const setIsDone = ls => !!ls && (ls.manualDone===true || ls.confirmed===true || [ls.completedReps,ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
+const setIsDone = ls => !!ls && (ls.skipped===true || ls.manualDone===true || ls.confirmed===true || [ls.completedReps,ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
 function fmtN(v){ const m=String(v==null?'':v); return /^-?\d+(\.\d+)?$/.test(m)?String(parseFloat(m)):m }
 function wtDisplay(ls){ if(!ls) return {bw:true,text:'BW'}; const band=ls.bandColour&&String(ls.bandColour).trim(); if(band) return {band:true,text:band}; const L=ls.completedLoad==null?'':String(ls.completedLoad).trim(); if(L!==''&&L!=='-'&&L.toLowerCase()!=='x'){ if(/^-?\d+(\.\d+)?$/.test(L)) return {kg:true,text:fmtN(L)}; return {raw:true,text:L} } return {bw:true,text:'BW'} }
-function sessionDoneStats(sess){ const exs=safeExercises(sess).filter(e=>!e.isWarmup); let total=0,done=0; exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=ex.force_complete?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); total+=p; done+=d }); return {done,total} }
+function sessionDoneStats(sess){ const exs=safeExercises(sess).filter(e=>!e.isWarmup); let total=0,done=0; exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=(ex.skipped||ex.force_complete)?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); total+=p; done+=d }); return {done,total} }
 function rollupPct(list){ let t=0,d=0; (list||[]).forEach(s=>{ const st=sessionDoneStats(s); t+=st.total; d+=st.done }); return t>0?Math.round(d/t*100):0 }
 
 function computeSessionStatus(sess) {
@@ -410,7 +410,7 @@ function computeSessionStatus(sess) {
   for(const ex of exs){
     const prescribed = parseInt(ex.sets) || 1
     // force_complete on an exercise counts all its sets as done
-    const done = ex.force_complete
+    const done = (ex.skipped||ex.force_complete)
       ? prescribed
       : (ex.loggedSets||[]).filter(setIsDone).length
     totalPrescribed += prescribed
@@ -1883,6 +1883,17 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
   return (
     <div style={{padding:20,maxWidth:860,margin:'0 auto'}}>
       <Breadcrumb items={[{label:'Clients',onClick:()=>go('clients')},{label:client.name}]}/>
+      {(()=>{ const ne=Array.isArray(client.no_equipment)?client.no_equipment:[]; const fav=Array.isArray(client.fav_exercises)?client.fav_exercises:[]; const lfav=Array.isArray(client.least_fav_exercises)?client.least_fav_exercises:[]; if(!ne.length&&!fav.length&&!lfav.length) return null; const clashes=[...new Set(sessions.filter(s=>s.client_id===client.id).flatMap(s=>safeExercises(s)).filter(e=>!e.isWarmup).map(e=>e.name).filter(nm=>exerciseMissingEquip(nm,ne).length>0))]; return (
+        <Panel style={{marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.white,textTransform:'uppercase',letterSpacing:'0.05em',fontFamily:'Space Grotesk,sans-serif',marginBottom:12}}>Equipment & preferences</div>
+          {ne.length>0 && <div style={{marginBottom:12}}><div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>No access to</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{ne.map(x=>(<span key={x} style={{fontSize:11,fontWeight:600,color:C.red,background:`${C.red}14`,border:`1px solid ${C.red}40`,borderRadius:7,padding:'3px 9px'}}>{x}</span>))}</div></div>}
+          {clashes.length>0 && <div style={{marginBottom:12,background:`${C.orange}12`,border:`1px solid ${C.orange}40`,borderRadius:9,padding:'9px 11px'}}><div style={{fontSize:11.5,fontWeight:700,color:C.orange,marginBottom:4}}>{clashes.length} programmed exercise{clashes.length>1?'s':''} may need missing equipment</div><div style={{fontSize:11.5,color:C.muted,lineHeight:1.5}}>{clashes.slice(0,8).join(', ')}{clashes.length>8?', ...':''}</div></div>}
+          <div style={{display:'flex',gap:18,flexWrap:'wrap'}}>
+            {fav.length>0 && <div><div style={{fontSize:10.5,color:C.green,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Favourites</div><div style={{display:'flex',flexWrap:'wrap',gap:5}}>{fav.map(x=>(<span key={x} style={{fontSize:11,color:C.green,background:`${C.green}14`,borderRadius:6,padding:'3px 8px'}}>{x}</span>))}</div></div>}
+            {lfav.length>0 && <div><div style={{fontSize:10.5,color:C.orange,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Least favourite</div><div style={{display:'flex',flexWrap:'wrap',gap:5}}>{lfav.map(x=>(<span key={x} style={{fontSize:11,color:C.orange,background:`${C.orange}14`,borderRadius:6,padding:'3px 8px'}}>{x}</span>))}</div></div>}
+          </div>
+        </Panel>
+      ) })()}
       {(client.wellness_enabled || getWellnessFor(client.id,1).length>0) && (()=>{ const logs=getWellnessFor(client.id,7); const latest=logs[0]; const sc=wellnessScore(latest); const recentRpe=sessions.filter(x=>x.client_id===client.id&&x.session_rpe).sort((a,b)=>new Date(b.completed_at||0)-new Date(a.completed_at||0)).slice(0,5); return (
         <Panel style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
@@ -2915,7 +2926,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     return (
       <div style={{background:_exDone?`${C.green}0F`:C.ink,borderTop:`1px solid ${C.border}`,padding:'12px 14px',transition:'background .3s'}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:10}}>
-          <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}</span>
+          <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}{ex.sub_reason?` - ${ex.sub_reason}`:''}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by client</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</span>
           {_exDone&&<span style={{flexShrink:0,display:'flex',alignItems:'center'}} title="All sets logged"><Icon name="check" size={16} color={C.green}/></span>}
           {ex.notes&&<button onClick={()=>setNoteOpenId(noteOpen?null:ex.id)} style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:noteOpen?`${C.amber}1A`:C.card,border:`1px solid ${noteOpen?C.amber:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:noteOpen?C.amber:C.muted,fontSize:11,fontWeight:600}}><Icon name="fileText" size={12} color={noteOpen?C.amber:C.muted}/>Note</button>}
           <button onClick={()=>{setAthleteNoteEx(athleteNoteEx===ex.id?null:ex.id);setAthleteNoteDraft('')}} title="Leave your coach a note" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:athleteNoteEx===ex.id?`${C.c1}22`:C.card,border:`1px solid ${athleteNoteEx===ex.id?C.c2:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:athleteNoteEx===ex.id?C.c3:C.muted,fontSize:11,fontWeight:600}}><Icon name="message" size={12} color={athleteNoteEx===ex.id?C.c3:C.muted}/></button>
@@ -3959,6 +3970,10 @@ function getClientPBs(clientId, sessions, allSessions, weeks, programs) {
 function generateAutoFlags(client, sessions, allSessions, programs, weeks) {
   const flags = [], cs = sessions.filter(s=>s.client_id===client.id)
   ;(()=>{ const wl=getWellnessFor(client.id,3); const lat=wl[0]; if(lat){ const sc=wellnessScore(lat); if(lat.pain_flag) flags.push({id:`af_pain_${client.id}`,flag_type:'injury',title:'Pain flagged in latest check-in',body:lat.notes||'Athlete flagged pain or injury in their daily readiness check-in.',is_auto:true,is_resolved:false}); if(sc!=null && sc<40) flags.push({id:`af_ready_${client.id}`,flag_type:'warning',title:`Low readiness (${sc}/100)`,body:`Latest check-in ${lat.log_date} — sleep, energy or soreness trending low.`,is_auto:true,is_resolved:false}) } })()
+  ;(()=>{ const ne=Array.isArray(client.no_equipment)?client.no_equipment:[]; if(!ne.length) return; const clash=[...new Set(cs.flatMap(x=>safeExercises(x)).filter(e=>!e.isWarmup).map(e=>e.name).filter(nm=>exerciseMissingEquip(nm,ne).length>0))]; if(clash.length) flags.push({id:`af_equip_${client.id}`,flag_type:'warning',title:`${clash.length} exercise${clash.length>1?'s':''} may need unavailable equipment`,body:clash.slice(0,6).join(', '),is_auto:true,is_resolved:false}) })()
+  ;(()=>{ const cutoff=Date.now()-12*864e5; getSubsForClient(client.id).filter(su=>new Date(su.created_at||0).getTime()>=cutoff).slice(0,6).forEach(su=>{ flags.push({id:`af_sub_${su.id||su.created_at}`,flag_type:'focus',title:`Swapped ${su.original_name} for ${su.substitute_name}`,body:`${su.reason||'No reason given'} (${su.scope==='program'?'rest of program':'this session'})`,is_auto:true,is_resolved:false}) }) })()
+  ;(()=>{ const added=[...new Set(cs.flatMap(z=>safeExercises(z)).filter(e=>e.client_added).map(e=>e.name))]; if(added.length) flags.push({id:`af_added_${client.id}`,flag_type:'focus',title:`${added.length} exercise${added.length>1?'s':''} added by client`,body:added.slice(0,6).join(', '),is_auto:true,is_resolved:false}) })()
+  ;(()=>{ const sk=[...new Set(cs.flatMap(z=>safeExercises(z)).filter(e=>e.skipped).map(e=>e.name))]; if(sk.length) flags.push({id:`af_skip_${client.id}`,flag_type:'focus',title:`${sk.length} exercise${sk.length>1?'s':''} skipped on purpose`,body:sk.slice(0,6).join(', '),is_auto:true,is_resolved:false}) })()
   if(cs.length<3) return flags
   const recent8 = cs.slice(-8)
   const notDone = recent8.filter(s=>computeSessionStatus(s)==='not_started').length
@@ -6038,7 +6053,7 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving, weeks=
       const exs=safeExercises(sess).filter(e=>!e.isWarmup)
       if(!exs.length) return null
       let tp=0,td=0
-      exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=ex.force_complete?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); tp+=p; td+=d })
+      exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=(ex.skipped||ex.force_complete)?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); tp+=p; td+=d })
       return td===0?'not_started':(td>=tp?'complete':'in_progress')
     }
     const out=[]
@@ -6984,7 +6999,97 @@ function getSessionPBs(sessId, pbs){
   })
   return out
 }
-function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId, clientName='' }){
+const SKIP_REASONS = ['Pain / discomfort','Ran out of time','Too fatigued','Equipment busy','Felt unnecessary','Other']
+function SkipReasonSheet({ title, onPick, onClose }){
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9600,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <h2 style={{fontSize:17,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>{title||'Why skip?'}</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Cancel</button>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {SKIP_REASONS.map(r=>(<button key={r} onClick={()=>onPick(r)} style={{textAlign:'left',background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'13px 14px',color:C.white,fontSize:13.5,fontWeight:600,cursor:'pointer'}}>{r}</button>))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function computeSessionTotals(sess){
+  const exs=safeExercises(sess).filter(e=>!e.isWarmup)
+  let totalReps=0, totalVol=0, setsDone=0
+  exs.forEach(ex=>{ if(ex.skipped) return; (ex.loggedSets||[]).forEach(ls=>{ if(ls.skipped) return; const reps=parseFloat(ls.completedReps); const load=parseFloat(ls.completedLoad); if(!isNaN(reps)&&reps>0){ totalReps+=reps; setsDone++; if(!isNaN(load)&&load>0) totalVol+=reps*load } else if(setIsDone(ls)) setsDone++ }) })
+  return { totalReps:Math.round(totalReps), totalVol:Math.round(totalVol), setsDone, exCount:exs.length }
+}
+function buildSessionEval({ goal, stats, rpe, pbCount }){
+  const g=(goal||'').toLowerCase(); const parts=[]
+  if(pbCount>0) parts.push(`${pbCount} new personal best${pbCount>1?'s':''} today — that is real progress on the board.`)
+  if(/strength|strong|power|1rm/.test(g)) parts.push(`Heavy, quality sets like these are exactly what build maximal strength. Chase small load jumps next time.`)
+  else if(/muscle|hypertrophy|size|lean|tone|build/.test(g)) parts.push(`${stats.totalVol.toLocaleString()} kg of total work moved — accumulating volume like this is what grows muscle over the weeks.`)
+  else if(/fat|weight|condition|fitness/.test(g)) parts.push(`Showing up and finishing the work is the whole game for body composition — a strong, consistent session.`)
+  else if(/return|rehab|injury|pain/.test(g)) parts.push(`Smart, controlled work that keeps you moving forward without flare-ups — exactly the right approach.`)
+  else parts.push(`Strong, consistent work that moves you closer to your goal.`)
+  if(rpe>=9) parts.push(`That was an all-out effort — prioritise sleep and food before the next one.`)
+  else if(rpe>=7) parts.push(`Solid effort today. Recover well and go again.`)
+  else if(rpe>0&&rpe<=4) parts.push(`Felt comfortable — there may be room to push the load a little next time.`)
+  return parts.join(' ')
+}
+function SessionDoneSummary({ sess, profile, stats, rpe, pbHits, onClose }){
+  const name=(((profile&&profile.name)||'').split(' ')[0])||''
+  const pbCount=Array.isArray(pbHits)?pbHits.length:(pbHits||0)
+  const evalMsg=buildSessionEval({ goal:(profile&&profile.goal)||'', stats, rpe, pbCount })
+  const St=({v,l})=>(<div style={{flex:1,textAlign:'center'}}><div style={{fontSize:26,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{v}</div><div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginTop:5}}>{l}</div></div>)
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9700,background:'rgba(4,7,15,0.94)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',overflowY:'auto',padding:'24px 18px 26px'}}>
+        <div style={{textAlign:'center',marginBottom:20}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.green,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>Session complete</div>
+          <h2 style={{fontSize:24,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>Nice work{name?', '+name:''}!</h2>
+        </div>
+        <div style={{display:'flex',gap:8,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'18px 10px',marginBottom:16}}>
+          <St v={stats.totalVol.toLocaleString()} l="kg lifted"/>
+          <St v={stats.totalReps} l="total reps"/>
+          <St v={stats.setsDone} l="sets done"/>
+        </div>
+        {pbCount>0 && <div style={{textAlign:'center',background:`${C.gold}14`,border:`1px solid ${C.gold}50`,borderRadius:12,padding:'12px',marginBottom:16}}><span style={{fontSize:13.5,fontWeight:700,color:C.gold,fontFamily:'Space Grotesk,sans-serif'}}>{pbCount} new personal best{pbCount>1?'s':''}!</span></div>}
+        <p style={{fontSize:13.5,color:C.muted,lineHeight:1.6,margin:'0 0 20px',textAlign:'center'}}>{evalMsg}</p>
+        <button onClick={onClose} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Done</button>
+      </div>
+    </div>
+  )
+}
+function FinishFlow({ sess, profile, pbHits, updateSession, onClose }){
+  const [step,setStep]=useState(0)
+  const [chMin,setChMin]=useState(0)
+  const [chRpe,setChRpe]=useState(0)
+  const [chNote,setChNote]=useState('')
+  const submit=()=>{ const dur=Math.max(0,Math.round(chMin*60)); const ns=computeSessionStatus(sess); const patch={duration_seconds:dur}; if(chRpe) patch.session_rpe=chRpe; if(chNote&&chNote.trim()) patch.client_notes=chNote.trim(); if(ns!=='complete'){ patch.status='manual_complete'; patch.completed_at=new Date().toISOString() } if(updateSession) updateSession(sess.id,patch); setStep(1) }
+  if(step===1) return <SessionDoneSummary sess={sess} profile={profile} stats={computeSessionTotals(sess)} rpe={chRpe} pbHits={pbHits} onClose={onClose}/>
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9700,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>Finish session</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Close</button>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:16}}>
+          <span style={{fontSize:13,color:C.muted}}>Time taken</span>
+          <button onClick={()=>setChMin(m=>Math.max(0,m-5))} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>-</button>
+          <input type="number" value={chMin} onChange={e=>setChMin(Math.max(0,parseInt(e.target.value)||0))} style={{width:52,textAlign:'center',background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'8px 4px',color:C.white,fontSize:15,fontWeight:700,fontFamily:'Space Grotesk,sans-serif'}}/>
+          <span style={{fontSize:13,color:C.muted}}>min</span>
+          <button onClick={()=>setChMin(m=>m+5)} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>+</button>
+        </div>
+        <div style={{fontSize:13,color:C.muted,marginBottom:14}}>How hard was the whole session?</div>
+        <div style={{display:'flex',gap:5,marginBottom:16}}>{[1,2,3,4,5,6,7,8,9,10].map(n=>(<button key={n} onClick={()=>setChRpe(n)} style={{flex:1,padding:'11px 0',borderRadius:8,border:`1px solid ${chRpe===n?C.amber:C.border}`,background:chRpe===n?C.amber:'transparent',color:chRpe===n?C.bg:C.muted,fontWeight:700,fontSize:13,cursor:'pointer'}}>{n}</button>))}</div>
+        <textarea value={chNote} onChange={e=>setChNote(e.target.value)} placeholder="Anything to tell your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:60,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
+        <button onClick={submit} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>See summary</button>
+      </div>
+    </div>
+  )
+}
+
+function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId, clientName='', onSubstitute, profile, pbHits }){
   const [demoUrl,setDemoUrl]=useState(null)
   const [reqDone,setReqDone]=useState({})
   const exs = safeExercises(sess)
@@ -7043,6 +7148,9 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
 
   const [restOn,setRestOn] = useState(!!initialRest)
   const [histEx,setHistEx] = useState(null)
+  const [subEx,setSubEx]=useState(null)
+  const [skipPend,setSkipPend]=useState(null)
+  const [summaryShown,setSummaryShown]=useState(false)
   const [resting,setResting] = useState(false)
   const [restSec,setRestSec] = useState(0)
   const [restTarget,setRestTarget] = useState(0)
@@ -7076,7 +7184,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
     if(ns!=='complete'){ patch.status='manual_complete'; patch.completed_at=new Date().toISOString() }
     updateSession(sess.id, patch)
     setCheckIn(false)
-    onFinish&&onFinish()
+    setSummaryShown(true)
   }
   const advance = (restFrom)=>{ if(c<steps.length-1){ setCursor(c+1); if(restOn){ setRestUp(!restFrom); setRestTarget(parseT(restFrom)); setRestSec(0); setResting(true) } } else { openCheckIn() } }
   const writeSet = (extra)=>{
@@ -7086,6 +7194,8 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
     if(idx>=0) ls[idx]=entry; else ls.push(entry)
     saveExs(exs.map((x,i)=> i===step.exIndex?{...x,loggedSets:ls}:x))
   }
+  const skipSetGuided = (reason)=>{ writeSet({skipped:true, skip_reason:reason}); if(c<steps.length-1){ setCursor(c+1); setResting(false) } else { openCheckIn() } }
+  const skipExerciseGuided = (reason)=>{ saveExs(exs.map((x,i)=> i===step.exIndex?{...x,skipped:true,skip_reason:reason,skipped_at:new Date().toISOString()}:x)); const nextI=steps.findIndex((st,i)=>i>c && st.exIndex!==step.exIndex); if(nextI>=0){ setCursor(nextI); setResting(false) } else { openCheckIn() } }
   const logSet = ()=>{
     const e={confirmed:true}
     if(!isWarm && !isTime) e.completedReps = (draft.reps!==''?fmtN(draft.reps):fmtN(prescReps))
@@ -7168,7 +7278,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
               <span style={{fontSize:11,color:C.c3,fontWeight:700,letterSpacing:'0.05em'}}>{step.superset?'SUPERSET · ':''}SET {setNum} OF {step.nSets}</span>
               {!isWarm&&<button onClick={()=>setHistEx(ex.name)} title="History — past weights" style={{marginLeft:'auto',background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px',color:C.muted,fontSize:11,fontWeight:600,cursor:'pointer'}}>History</button>}
             </div>
-            <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:21,color:C.white,marginBottom:6}}>{ex.name}</div>
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10,marginBottom:6}}><div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:21,color:C.white}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10.5,fontFamily:'Inter,sans-serif',fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by you</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>Skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</div>{!isWarm && <div style={{display:'flex',gap:6,flexShrink:0}}>{onSubstitute && <button onClick={()=>setSubEx(ex)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:8,padding:'6px 10px',color:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>Swap</button>}<button onClick={()=> ex.skipped ? saveExs(exs.map((x,i)=>i===step.exIndex?{...x,skipped:false,skip_reason:undefined}:x)) : setSkipPend({kind:'ex'})} style={{background:ex.skipped?`${C.orange}1A`:'transparent',border:`1px solid ${ex.skipped?C.orange:C.border}`,borderRadius:8,padding:'6px 10px',color:ex.skipped?C.orange:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>{ex.skipped?'Un-skip':'Skip'}</button></div>}</div>
             <div style={{fontSize:13,color:C.white,fontWeight:600}}>Target: <span style={{color:'rgba(255,255,255,0.92)'}}>{prescLine||'—'}</span></div>
             {ex.rest&&<div style={{fontSize:11,color:C.faint,marginTop:3}}>Rest {ex.rest}</div>}
             {ex.notes&&<div style={{fontStyle:'italic',fontSize:12,color:C.muted,borderLeft:`2px solid ${C.amber}66`,paddingLeft:8,marginTop:10}}>{ex.notes}</div>}
@@ -7190,7 +7300,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
                   <button onClick={()=>{ setEffSec(0); setEffOn(o=>!o) }} style={{border:`1px solid ${C.amber}55`,background:`${C.amber}15`,color:C.amber,fontWeight:700,fontSize:13,borderRadius:9,padding:'8px 16px',cursor:'pointer'}}>{effOn?'Stop':'Start'}</button>
                 </div>
               )}
-              <button onClick={markDone} style={{width:'100%',background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Done \u2713':'Mark done'}{restOn?' & rest':''}</button>
+              <button onClick={markDone} style={{width:'100%',background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Done \u2713':'Mark done'}{restOn?' & rest':''}</button>{!isWarm && <button onClick={()=>setSkipPend({kind:'set'})} style={{width:'100%',marginTop:8,background:'transparent',border:'none',color:C.muted,fontSize:12,fontWeight:600,cursor:'pointer'}}>Skip this set</button>}
             </div>
           ) : (<>
             {isTime && (
@@ -7255,18 +7365,26 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
           </div>
         </div>
       )}
+      {summaryShown && <SessionDoneSummary sess={sess} profile={profile} stats={computeSessionTotals(sess)} rpe={chRpe} pbHits={pbHits} onClose={()=>{ setSummaryShown(false); onFinish&&onFinish() }}/>}
       {histEx && <ExerciseHistoryModal exerciseName={histEx} clientId={clientId} sessions={sessions} weeks={weeks} programs={programs} onClose={()=>setHistEx(null)}/>}
+      {subEx && <ClientSubModal ex={subEx} allSessions={sessions} programName={programName} onApply={(payload)=>onSubstitute&&onSubstitute(subEx, sess.id, payload)} onClose={()=>setSubEx(null)}/>}
+      {skipPend && <SkipReasonSheet title={skipPend.kind==='set'?'Why skip this set?':'Why skip this exercise?'} onPick={(r)=>{ if(skipPend.kind==='set') skipSetGuided(r); else skipExerciseGuided(r); setSkipPend(null) }} onClose={()=>setSkipPend(null)}/>}
       {demoUrl && <DemoModal url={demoUrl} title="Exercise demo" onClose={()=>setDemoUrl(null)}/>}
     </div>
   )
 }
 
-function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits, updateSession, clientId, clientName }){
+function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits, updateSession, clientId, clientName, allSessions=[], onSubstitute, profile }){
   const exs = safeExercises(sess)
   const [mode,setMode] = useState('guided')
   const [restOn,setRestOn] = useState(true)
   const [demoUrl,setDemoUrl]=useState(null)
   const [reqDone,setReqDone]=useState({})
+  const [subEx,setSubEx]=useState(null)
+  const [addOpen,setAddOpen]=useState(false)
+  const [skipPend,setSkipPend]=useState(null)
+  const [finishOpen,setFinishOpen]=useState(false)
+  const addExercise = (payload)=>{ if(!updateSession) return; const nm=((payload&&payload.name)||'').trim(); if(!nm) return; const n=Math.max(1,parseInt(payload.sets)||1); const reps=String((payload&&payload.reps)||''); const newEx={ id:uid(), name:nm, blockLabel:'', sequenceGroup:'', sequenceType:'single', sequenceOrder:0, isWarmup:false, sets:String(n), reps, load:String((payload&&payload.load)||''), rpe:'', tempo:'', rest:'', notes:'', collect:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:Array.from({length:n},()=>({reps})), targetCols:['reps'], loggedSets:[], client_added:true, added_at:new Date().toISOString() }; updateSession(sess.id, {exercises:[...safeExercises(sess), newEx]}); setAddOpen(false) }
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
   const _hasData = (z) => ['completedReps','completedLoad','completedTime','completedDistance','speed','rpm','power','energy','hr','bandColour'].some(k=>z&&z[k]!=null&&String(z[k]).trim()!=='')
@@ -7353,7 +7471,7 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           const sets=Array.from({length:N},(_,i)=>i+1)
           return (
             <div key={ex.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 14px'}}>
-              <div style={{fontSize:14,fontWeight:600,color:C.white,marginBottom:8}}>{ex.name}</div>
+              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10,marginBottom:8}}><div style={{fontSize:14,fontWeight:600,color:C.white}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by you</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>Skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</div><div style={{display:'flex',gap:6,flexShrink:0}}>{onSubstitute && <button onClick={()=>setSubEx(ex)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:7,padding:'4px 9px',color:C.c3,fontSize:10.5,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>Swap</button>}<button onClick={()=> ex.skipped ? (updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===ex.id?{...e,skipped:false,skip_reason:undefined}:e)})) : setSkipPend({kind:'ex',ex})} style={{background:ex.skipped?`${C.orange}1A`:'transparent',border:`1px solid ${ex.skipped?C.orange:C.border}`,borderRadius:7,padding:'4px 9px',color:ex.skipped?C.orange:C.c3,fontSize:10.5,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>{ex.skipped?'Un-skip':'Skip'}</button></div></div>
               {(()=>{ const meta=getExMeta(ex.name); if(!meta) return null; return (<>
                 {meta.description && <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginBottom:8,whiteSpace:'pre-wrap'}}>{meta.description}</div>}
                 {meta.youtube_url && <button onClick={()=>setDemoUrl(meta.youtube_url)} style={{display:'inline-flex',alignItems:'center',gap:5,background:`${C.c1}1A`,border:`1px solid ${C.c1}55`,borderRadius:7,padding:'4px 10px',color:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',marginBottom:8}}>{'\u25B6'} Watch demo</button>}
@@ -7378,13 +7496,15 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
                   } else {
                     txt=presReps!=null&&presReps!==''?mkReps(presReps):'—'
                   }
-                  return <span key={sn} style={{fontSize:12,fontWeight:700,color:done?C.white:C.faint,background:done?`${C.green}14`:C.ink,border:`1px solid ${done?`${C.green}40`:C.border}`,borderRadius:7,padding:'5px 9px'}}>{txt}</span>
+                  const isSkipped=!!(ls&&ls.skipped)
+                  return <button key={sn} onClick={()=>{ if(isSkipped){ updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===ex.id?{...e,loggedSets:(e.loggedSets||[]).map(z=>z.setNumber===sn?{...z,skipped:false,skip_reason:undefined}:z)}:e)}) } else if(!done){ setSkipPend({kind:'set',exId:ex.id,sn}) } }} style={{fontSize:12,fontWeight:700,color:isSkipped?C.orange:(done?C.white:C.faint),background:isSkipped?`${C.orange}1A`:(done?`${C.green}14`:C.ink),border:`1px solid ${isSkipped?C.orange:(done?`${C.green}40`:C.border)}`,borderRadius:7,padding:'5px 9px',cursor:(isSkipped||!done)?'pointer':'default'}}>{isSkipped?'Skipped':txt}</button>
                 })}
               </div>
             </div>
           )
         })}
       </div>
+      <button onClick={()=>setAddOpen(true)} style={{width:'100%',background:'transparent',border:`1px dashed ${C.border}`,borderRadius:11,padding:'13px',color:C.c3,fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:14}}>+ Add your own exercise</button>
       {warm.length>0 && (
         <div style={{marginTop:18}}>
           <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>Warm-up / movement prep</div>
@@ -7414,6 +7534,11 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           <div style={{fontSize:10,color:C.faint,textAlign:'center',marginTop:8}}>Tick each round as you go - warm-ups don't count toward your completion %.</div>
         </div>
       )}
+      {subEx && <ClientSubModal ex={subEx} allSessions={allSessions} programName={programName} onApply={(payload)=>onSubstitute&&onSubstitute(subEx, sess.id, payload)} onClose={()=>setSubEx(null)}/>}
+      {addOpen && <AddExerciseModal onAdd={addExercise} onClose={()=>setAddOpen(false)}/>}
+      {status!=='notstarted' && <button onClick={()=>setFinishOpen(true)} style={{width:'100%',marginTop:18,background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'15px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Finish session</button>}
+      {finishOpen && <FinishFlow sess={sess} profile={profile} pbHits={pbHits} updateSession={updateSession} onClose={()=>setFinishOpen(false)}/>}
+      {skipPend && <SkipReasonSheet title={skipPend.kind==='set'?'Why skip this set?':'Why skip this exercise?'} onPick={(r)=>{ if(skipPend.kind==='set'){ updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===skipPend.exId?{...e,loggedSets:(()=>{ const ls=e.loggedSets||[]; const i=ls.findIndex(z=>z.setNumber===skipPend.sn); const entry={...(i>=0?ls[i]:{id:uid(),setNumber:skipPend.sn}),skipped:true,skip_reason:r}; return i>=0?ls.map(z=>z.setNumber===skipPend.sn?entry:z):[...ls,entry] })()}:e)}) } else { updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===skipPend.ex.id?{...e,skipped:true,skip_reason:r,skipped_at:new Date().toISOString()}:e)}) } setSkipPend(null) }} onClose={()=>setSkipPend(null)}/>}
       {demoUrl && <DemoModal url={demoUrl} title="Exercise demo" onClose={()=>setDemoUrl(null)}/>}
     </div>
   )
@@ -7463,6 +7588,42 @@ function StreakHeatmap({ levelByDay, current, longest, total }){
   )
 }
 
+const EQUIPMENT_LIST = [
+  {l:'Barbell', kw:['barbell','bench press','back squat','front squat','deadlift','overhead press','ohp','bent over row','romanian deadlift','rdl','hip thrust','good morning']},
+  {l:'Squat / power rack', kw:['back squat','front squat','rack pull','rack']},
+  {l:'Smith machine', kw:['smith']},
+  {l:'Dumbbells', kw:['dumbbell','db ',' db','goblet']},
+  {l:'Kettlebells', kw:['kettlebell','kb ',' kb','swing']},
+  {l:'Cable machine', kw:['cable','pulldown','pull-down','pushdown','push-down','face pull','tricep pushdown','straight arm']},
+  {l:'Lat pulldown', kw:['lat pulldown','pulldown','pull-down']},
+  {l:'Leg press', kw:['leg press']},
+  {l:'Hack squat', kw:['hack squat']},
+  {l:'Leg curl machine', kw:['leg curl','hamstring curl','lying curl','seated curl']},
+  {l:'Leg extension machine', kw:['leg extension','knee extension']},
+  {l:'Chest press / pec deck', kw:['pec deck','chest press machine','machine chest','pec fly','machine fly']},
+  {l:'Pull-up / chin-up bar', kw:['pull-up','pull up','pullup','chin-up','chin up','chinup','muscle up']},
+  {l:'Dip station', kw:['dip']},
+  {l:'Adjustable bench', kw:['incline','decline','flye','fly']},
+  {l:'Trap / hex bar', kw:['trap bar','hex bar','trap-bar']},
+  {l:'EZ bar', kw:['ez bar','ez-bar','ez curl']},
+  {l:'Resistance bands', kw:['band']},
+  {l:'TRX / suspension', kw:['trx','suspension']},
+  {l:'Sled / prowler', kw:['sled','prowler']},
+  {l:'GHD / glute-ham', kw:['ghd','glute ham','glute-ham','nordic']},
+  {l:'Landmine', kw:['landmine']},
+  {l:'Safety squat bar', kw:['ssb','safety squat','safety bar']},
+  {l:'Plyo box', kw:['box jump','plyo','step up','step-up']},
+  {l:'Medicine / slam ball', kw:['med ball','medicine ball','slam ball','wall ball']},
+  {l:'Rower (erg)', kw:['row erg','rower',' erg','c2 ']},
+  {l:'Assault / air bike', kw:['assault bike','air bike','echo bike','bike erg']},
+  {l:'Treadmill', kw:['treadmill']},
+]
+function exerciseMissingEquip(name, noEquip){
+  if(!name || !Array.isArray(noEquip) || !noEquip.length) return []
+  const n=(' '+name+' ').toLowerCase()
+  return EQUIPMENT_LIST.filter(e=>noEquip.includes(e.l) && e.kw.some(k=>n.includes(k))).map(e=>e.l)
+}
+
 function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracked=0, measurements=[], addMeasurement, deleteMeasurement }){
   const c = client || {}
   const hsInit = (c.health_screen && typeof c.health_screen==='object') ? c.health_screen : {}
@@ -7477,6 +7638,8 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
   const [hsForm, setHsForm] = React.useState(hsInit)
   const [open, setOpen] = React.useState({ personal:true })
   const [saved, setSaved] = React.useState(false)
+  const [favDraft, setFavDraft] = React.useState('')
+  const [lfavDraft, setLfavDraft] = React.useState('')
 
   const setF = (k,v)=> setForm(f=>({...f,[k]:v}))
   const flash = ()=>{ setSaved(true); setTimeout(()=>setSaved(false), 1400) }
@@ -7518,6 +7681,20 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
       {control}
     </div>
   )
+  const arrOf = k => Array.isArray(c[k])?c[k]:[]
+  const toggleArr = (key,val)=>{ const cur=arrOf(key); save({[key]: cur.includes(val)?cur.filter(x=>x!==val):[...cur,val]}) }
+  const addArr = (key,val)=>{ val=(val||'').trim(); if(!val) return; const cur=arrOf(key); if(cur.some(x=>(x||'').toLowerCase()===val.toLowerCase())) return; save({[key]:[...cur,val]}) }
+  const rmArr = (key,val)=>{ save({[key]: arrOf(key).filter(x=>x!==val)}) }
+  const chipEditor = (key,color,draft,setDraft,ph)=>{ const list=arrOf(key); return (
+    <div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>{list.length? list.map(x=>(<span key={x} style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,padding:'5px 9px',borderRadius:8,background:`${color}18`,border:`1px solid ${color}44`,color}}>{x}<button onClick={()=>rmArr(key,x)} style={{background:'none',border:'none',color,cursor:'pointer',fontSize:14,lineHeight:1,padding:0}}>{'\u00D7'}</button></span>)) : <span style={{fontSize:11.5,color:C.faint,fontStyle:'italic'}}>None added yet</span>}</div>
+      <div style={{display:'flex',gap:7}}>
+        <input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'){ addArr(key,draft); setDraft('') } }} placeholder={ph} style={{...inp,flex:1}}/>
+        <button onClick={()=>{ addArr(key,draft); setDraft('') }} style={{background:C.lift,border:`1px solid ${C.border}`,borderRadius:8,padding:'0 14px',color:C.white,fontSize:13,fontWeight:700,cursor:'pointer',flexShrink:0}}>Add</button>
+      </div>
+    </div>
+  )}
+
 
   const yn = (k)=>{ const v=hsForm[k]; return (
     <div style={{display:'flex',gap:6,flexShrink:0}}>
@@ -7587,6 +7764,18 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
     <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'4px 16px',marginBottom:14}}>
       <Toggle value={!!client.wellness_enabled} onChange={v=>save({wellness_enabled:v})} label="Daily readiness check-in" sublabel="Log sleep, energy, soreness, stress and mood each day for your coach"/>
     </div>
+    {section('gear','dumbbell','Equipment & exercises', <>
+      <div style={{marginBottom:8,fontSize:11.5,color:C.muted,lineHeight:1.5}}>Tick anything you do NOT have at your main gym. Your coach gets flagged if a programmed exercise needs it.</div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:7,marginBottom:18}}>
+        {EQUIPMENT_LIST.map(e=>{ const off=arrOf('no_equipment').includes(e.l); return (
+          <button key={e.l} onClick={()=>toggleArr('no_equipment',e.l)} style={{fontSize:11.5,fontWeight:600,padding:'7px 11px',borderRadius:8,cursor:'pointer',border:`1px solid ${off?C.red:C.border}`,background:off?`${C.red}1A`:'transparent',color:off?C.red:C.muted,display:'flex',alignItems:'center',gap:5}}>{off?<span style={{fontSize:10}}>{'\u2715'}</span>:null}{e.l}</button>
+        )})}
+      </div>
+      <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:7,textTransform:'uppercase',letterSpacing:'0.04em'}}>Favourite exercises</div>
+      {chipEditor('fav_exercises', C.green, favDraft, setFavDraft, 'Add a favourite...')}
+      <div style={{fontSize:11,fontWeight:700,color:C.orange,margin:'16px 0 7px',textTransform:'uppercase',letterSpacing:'0.04em'}}>Least favourite exercises</div>
+      {chipEditor('least_fav_exercises', C.orange, lfavDraft, setLfavDraft, 'Add one you dislike...')}
+    </>)}
     {section('health','alert','Health screen', <>
       <div style={{fontSize:11,color:C.faint,marginBottom:10,lineHeight:1.45}}>A quick safety check so your coach can train you appropriately. Your answers are private to your coach.</div>
       {HS_ITEMS.map(it=>(
@@ -8021,6 +8210,82 @@ function ReadinessDash({ clients, go }){
   )
 }
 
+// ─── CLIENT-INITIATED SUBSTITUTIONS ───────────────────────────────────────────
+let _SUBS = []
+function getSubsForClient(clientId){ return _SUBS.filter(x=>x.client_id===clientId).sort((a,b)=> (a.created_at<b.created_at?1:-1)) }
+async function hydrateSubs(token){ try{ const r=await sb.get('substitutions','select=*&order=created_at.desc&limit=300',token); _SUBS=Array.isArray(r)?r:[] }catch(e){} return _SUBS }
+function saveSub(row){
+  const full={ ...row, created_at:new Date().toISOString() }
+  _SUBS.unshift(full)
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{ return fetch(`${SUPABASE_URL}/rest/v1/substitutions`, { method:'POST', headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'}, body:JSON.stringify(full) }).catch(()=>{}) }catch(e){ return Promise.resolve() }
+}
+function ClientSubModal({ ex, allSessions, programName, onApply, onClose }){
+  const [search,setSearch]=useState('')
+  const [chosen,setChosen]=useState('')
+  const [reason,setReason]=useState('')
+  const [scope,setScope]=useState('session')
+  const suggestions = React.useMemo(()=>getSubSuggestions(ex.name, allSessions||[]),[ex.name,(allSessions||[]).length])
+  const q=search.trim().toLowerCase()
+  const filtered = suggestions.filter(s=>!q||s.name.toLowerCase().includes(q))
+  const typedNew = search.trim() && !suggestions.some(s=>s.name.toLowerCase()===q)
+  const canSave = chosen.trim() && reason
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+        <div style={{padding:'16px 18px 10px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div><h2 style={{fontSize:18,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:'0 0 3px'}}>Swap exercise</h2><div style={{fontSize:12,color:C.muted}}>Replacing <span style={{color:C.amber,fontWeight:600}}>{ex.name}</span></div></div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Close</button>
+        </div>
+        <div style={{padding:'4px 18px 8px',overflowY:'auto'}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or type any exercise..." style={{width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,marginBottom:12,fontFamily:'inherit'}}/>
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Similar movements</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:8}}>
+            {typedNew && <button onClick={()=>setChosen(search.trim())} style={{textAlign:'left',background:chosen===search.trim()?`${C.amber}18`:C.card,border:`1px solid ${chosen===search.trim()?C.amber:C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,fontWeight:600,cursor:'pointer'}}>Use "{search.trim()}"</button>}
+            {filtered.length===0 && !typedNew && <div style={{fontSize:12,color:C.faint,fontStyle:'italic'}}>No similar matches - type any name above.</div>}
+            {filtered.map(sg=>(<button key={sg.name} onClick={()=>{setChosen(sg.name);setSearch('')}} style={{textAlign:'left',display:'flex',alignItems:'center',gap:10,background:chosen===sg.name?`${C.amber}18`:C.card,border:`1px solid ${chosen===sg.name?C.amber:C.border}`,borderRadius:9,padding:'10px 12px',cursor:'pointer'}}><span style={{width:13,height:13,borderRadius:'50%',border:`2px solid ${chosen===sg.name?C.amber:C.faint}`,background:chosen===sg.name?C.amber:'transparent',flexShrink:0}}/><span style={{fontSize:13,fontWeight:600,color:C.white}}>{sg.name}</span>{sg.isLib?<span style={{fontSize:9,color:C.c3,marginLeft:'auto'}}>library</span>:null}</button>))}
+          </div>
+          {chosen?<div style={{fontSize:12,color:C.green,marginBottom:14}}>Swapping to <b>{chosen}</b></div>:null}
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Why are you swapping?</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:16}}>{SUB_REASONS.map(r=>(<button key={r} onClick={()=>setReason(r)} style={{fontSize:11.5,fontWeight:600,padding:'7px 11px',borderRadius:8,cursor:'pointer',border:`1px solid ${reason===r?C.c2:C.border}`,background:reason===r?`${C.c1}22`:'transparent',color:reason===r?C.c3:C.muted}}>{r}</button>))}</div>
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Apply to</div>
+          <div style={{display:'flex',gap:8}}>
+            {[['session','This session only'],['program','Rest of '+(programName||'this program')]].map(([v,l])=>(<button key={v} onClick={()=>setScope(v)} style={{flex:1,fontSize:12,fontWeight:700,padding:'11px 8px',borderRadius:9,cursor:'pointer',border:`1px solid ${scope===v?C.amber:C.border}`,background:scope===v?`${C.amber}18`:'transparent',color:scope===v?C.amber:C.muted}}>{l}</button>))}
+          </div>
+        </div>
+        <div style={{padding:'12px 18px 22px',borderTop:`1px solid ${C.border}`,marginTop:'auto'}}>
+          <button disabled={!canSave} onClick={()=>{ onApply({chosen:chosen.trim(),reason,scope}); onClose() }} style={{width:'100%',background:canSave?C.amber:C.lift,color:canSave?C.bg:C.faint,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:canSave?'pointer':'default',fontFamily:'Space Grotesk,sans-serif'}}>Confirm swap</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AddExerciseModal({ onAdd, onClose }){
+  const [name,setName]=useState(''); const [sets,setSets]=useState('3'); const [reps,setReps]=useState('8'); const [load,setLoad]=useState('')
+  const can=name.trim()
+  const inp={width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'11px 12px',color:C.white,fontSize:14,fontFamily:'inherit'}
+  const lab={fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+          <h2 style={{fontSize:18,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>Add an exercise</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Close</button>
+        </div>
+        <div style={{marginBottom:14}}><div style={lab}>Exercise name</div><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Cable lateral raise" style={inp} autoFocus/></div>
+        <div style={{display:'flex',gap:10,marginBottom:14}}>
+          <div style={{flex:1}}><div style={lab}>Sets</div><input value={sets} onChange={e=>setSets(e.target.value)} inputMode="numeric" style={inp}/></div>
+          <div style={{flex:1}}><div style={lab}>Reps</div><input value={reps} onChange={e=>setReps(e.target.value)} placeholder="8 or 8-12" style={inp}/></div>
+          <div style={{flex:1}}><div style={lab}>Load</div><input value={load} onChange={e=>setLoad(e.target.value)} placeholder="optional" style={inp}/></div>
+        </div>
+        <p style={{fontSize:11.5,color:C.faint,margin:'0 0 16px',lineHeight:1.5}}>Added to this session only. Your coach will see it, and your logged sets still count toward your history and PBs.</p>
+        <button disabled={!can} onClick={()=>{ onAdd({name,sets,reps,load}) }} style={{width:'100%',background:can?C.amber:C.lift,color:can?C.bg:C.faint,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:can?'pointer':'default',fontFamily:'Space Grotesk,sans-serif'}}>Add to session</button>
+      </div>
+    </div>
+  )
+}
+
 function ClientPreviewApp({ client, updateClient, sessions, allSessions, programs, weeks, goals, measurements, addMeasurement, deleteMeasurement, updateSession, onExit, av=0, messages, addMessage, replyMessage, markMsgRead, markMsgActioned, editMessage, chats=[], chatMessages=[], addChat, addChatMessage, chatUnread, markChatRead, isRealClient=false, coachName:coachNameProp='' }) {
   const [tab, setTab] = useState('home')
   const [chatOpenId, setChatOpenId] = useState(null)
@@ -8053,6 +8318,18 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const viewWeekEnd = new Date(viewWeekStart); viewWeekEnd.setDate(viewWeekStart.getDate()+7)
 
   const currentProgram = programs.find(p=>p.status==='current')
+  const applySubstitution = (ex, sessId, payload) => {
+    const chosen=((payload&&payload.chosen)||'').trim(); const reason=(payload&&payload.reason)||''; const scope=(payload&&payload.scope)||'session'
+    if(!ex||!chosen) return
+    const orig=ex.name; const list=allSessions||sessions
+    const srcSess=list.find(x=>x.id===sessId)||sessions.find(x=>x.id===sessId)
+    const progId=srcSess?srcSess.program_id:null
+    const stamp={ substituted_from:orig, sub_reason:reason, sub_at:new Date().toISOString() }
+    const applyTo=(session)=>safeExercises(session).map(e=>{ const hit = scope==='program' ? (!e.isWarmup && resolveExName(e.name)===resolveExName(orig)) : (e.id===ex.id); return hit?{...e,name:chosen,...stamp}:e })
+    if(scope==='program' && progId){ list.filter(z=>z.program_id===progId && (z.id===sessId || computeSessionStatus(z)!=='complete')).forEach(z=>updateSession(z.id,{exercises:applyTo(z)})) }
+    else { const z=list.find(x=>x.id===sessId)||sessions.find(x=>x.id===sessId); if(z) updateSession(z.id,{exercises:applyTo(z)}) }
+    saveSub({ client_id:client.id, program_id:progId, session_id:sessId, original_name:orig, substitute_name:chosen, reason, scope })
+  }
 
   // Dated sessions
   const datedSessions = sessions.map(s => ({sess:s, date:getSessionDate(s, allSessions, weeks, programs)})).filter(x => x.date)
@@ -8156,8 +8433,8 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
               const _exs=safeExercises(sess)
               const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
               const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
-              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} clientName={client&&client.name} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
-              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}} updateSession={updateSession} clientId={client.id} clientName={client.name}/>
+              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} clientName={client&&client.name} onSubstitute={applySubstitution} profile={client} pbHits={getSessionPBs(sess.id, pbs)} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}} updateSession={updateSession} clientId={client.id} clientName={client.name} allSessions={allSessions||sessions} onSubstitute={applySubstitution} profile={client}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
@@ -8809,6 +9086,7 @@ function MainApp({ session, onSignOut }) {
         await hydrateExPNotes(token)
         await hydrateVideoReqs(token)
         await hydrateWellness(token)
+        await hydrateSubs(token)
         const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl,cprof] = await Promise.all([
           sb.get('clients','select=*',token), sb.get('programs','select=*',token),
           sb.get('program_weeks','select=*',token), sb.get('sessions','select=*',token),
