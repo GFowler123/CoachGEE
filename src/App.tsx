@@ -352,24 +352,23 @@ function parseCSV(text){
     const targets   = [g(row,cx.t1),g(row,cx.t2),g(row,cx.t3),g(row,cx.t4)]
     const rawLoads  = [g(row,cx.l1),g(row,cx.l2),g(row,cx.l3),g(row,cx.l4)]
     // Parse each set according to load rules:
-    //   empty cell   → skipped / not performed
-    //   * - 0 bw     → completed, no added weight
+    //   blank cell   → NOT logged / incomplete (no set created — do not infer BW)
+    //   * - 0 bw     → completed at bodyweight / no added weight
     //   any value    → completed with that load (preserve raw)
     const NO_WEIGHT = new Set(['*','-','0','bw','bodyweight','b/w'])
     const loggedSets = targets.map((target,i)=>{
       const t    = (target||'').trim()
       const load = (rawLoads[i]||'').trim()
-      if(!t && !load) return null   // set position not prescribed — skip entirely
-      const isSkipped  = !load
+      if(!load) return null   // blank weight cell → not logged / incomplete (never inferred as BW)
       const isNoWeight = NO_WEIGHT.has(load.toLowerCase())
       return {
         id:uid(), setNumber:i+1,
         targetReps:    t,
-        completedLoad: isSkipped||isNoWeight ? '' : load,
-        completedReps: isSkipped ? '' : t,
+        completedLoad: isNoWeight ? '' : load,
+        completedReps: t,
         rpe:   '',
         notes: isNoWeight ? 'No added weight' : '',
-        skipped: isSkipped,
+        skipped: false,
       }
     }).filter(Boolean)
     const isWarmup = ['true','1','yes'].includes((g(row,cx.warmup)||'').toLowerCase())
@@ -659,7 +658,8 @@ async function hydrateExMeta(token){
 }
 function saveExMeta(name, fields){
   const k=exMetaKey(name); if(!k) return Promise.resolve()
-  const row = { name_key:k, display_name: resolveExName(name)||name||'', description:(fields&&fields.description)||'', youtube_url:(fields&&fields.youtube_url)||'', video_url:(fields&&fields.video_url)||((_EX_META[k]&&_EX_META[k].video_url)||''), updated_at:new Date().toISOString() }
+  const prev=_EX_META[k]||{}; const pick=(key)=> (fields && fields[key]!==undefined) ? fields[key] : (prev[key]||'')
+  const row = { name_key:k, display_name: resolveExName(name)||name||'', description:pick('description'), youtube_url:pick('youtube_url'), video_url:(fields&&fields.video_url!==undefined?fields.video_url:(prev.video_url||'')), pattern:pick('pattern'), muscles:pick('muscles'), equipment:pick('equipment'), updated_at:new Date().toISOString() }
   _EX_META[k]=row
   if(row.youtube_url||row.video_url) clearVideoReqs(name)
   window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
@@ -2525,7 +2525,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
   const blockLetters = () => { const seen=[]; mainEx.forEach(e=>{ const L=(e.blockLabel||'').replace(/[^A-Za-z]/g,'').toUpperCase().charAt(0); if(L&&!seen.includes(L)) seen.push(L) }); return seen }
   const lastLetter = () => { const ls=blockLetters(); return ls.length?ls[ls.length-1]:'A' }
   const nextBlockLabel = (mode) => { const ABC='ABCDEFGHIJKLMNOPQRSTUVWXYZ'; if(mode==='super'){ const L=lastLetter(); const n=mainEx.filter(e=>(e.blockLabel||'').toUpperCase().charAt(0)===L).length; return L+(n+1) } const li=ABC.indexOf(lastLetter()); const L=mainEx.length?ABC[Math.min(li+1,25)]:'A'; return L+'1' }
-  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], _metaDesc:(getExMeta(nm)||{}).description||'', _metaYt:(getExMeta(nm)||{}).youtube_url||'', _pnote:getExPNote(programId, nm) }); setQaName('') }
+  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, pattern:detectPattern(nm), blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], _metaDesc:(getExMeta(nm)||{}).description||'', _metaYt:(getExMeta(nm)||{}).youtube_url||'', _pnote:getExPNote(programId, nm) }); setQaName('') }
   const groupTypeName = (n) => n===1?'Single':n===2?'Superset':n===3?'Tri-set':'Circuit'
   const applyGroupColor = (ids,color) => { saveExs(exs.map(e=>ids.has(e.id)?{...e,labelColor:color||''}:e)); setColorPickerGroup(null) }
   const renameSection = (letter, name) => {
@@ -2556,7 +2556,15 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     saveExs(arr)
   }
 
-  const filtLib = DEFAULT_LIB.filter(e=>!qaName||e.name.toLowerCase().includes(qaName.toLowerCase())||e.pattern.toLowerCase().includes(qaName.toLowerCase()))
+  const libAll = React.useMemo(()=>{
+    const seen=new Map()
+    DEFAULT_LIB.forEach(e=>{ const k=e.name.toLowerCase(); if(!seen.has(k)) seen.set(k,{id:'lib-'+k, name:e.name, pattern:e.pattern||'', isLib:true}) })
+    ;(sessions||[]).forEach(ss=> safeExercises(ss).forEach(ex=>{ const nm=(resolveExName(ex.name)||ex.name||'').trim(); if(!nm) return; const k=nm.toLowerCase(); if(!seen.has(k)) seen.set(k,{id:'sess-'+k, name:nm, pattern:exPatternOf(ex), isLib:false}) }) )
+    return [...seen.values()].sort((a,b)=>a.name.localeCompare(b.name))
+  }, [sessions])
+  const qaQ = qaName.trim().toLowerCase()
+  const filtLib = libAll.filter(e=>!qaQ||e.name.toLowerCase().includes(qaQ)||(e.pattern||'').toLowerCase().includes(qaQ))
+  const qaExact = !!qaQ && libAll.some(e=>e.name.toLowerCase()===qaQ)
 
   // ── Compact exercise row with click-to-expand inline editor ──────────────
   const ExRow = ({ ex }) => {
@@ -2926,7 +2934,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     return (
       <div style={{background:_exDone?`${C.green}0F`:C.ink,borderTop:`1px solid ${C.border}`,padding:'12px 14px',transition:'background .3s'}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:10}}>
-          <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}{ex.sub_reason?` - ${ex.sub_reason}`:''}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by client</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</span>
+          <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}{ex.sub_reason?` - ${ex.sub_reason}`:''}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by client{ex.pending_approval?' · pending review':''}</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</span>
           {_exDone&&<span style={{flexShrink:0,display:'flex',alignItems:'center'}} title="All sets logged"><Icon name="check" size={16} color={C.green}/></span>}
           {ex.notes&&<button onClick={()=>setNoteOpenId(noteOpen?null:ex.id)} style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:noteOpen?`${C.amber}1A`:C.card,border:`1px solid ${noteOpen?C.amber:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:noteOpen?C.amber:C.muted,fontSize:11,fontWeight:600}}><Icon name="fileText" size={12} color={noteOpen?C.amber:C.muted}/>Note</button>}
           <button onClick={()=>{setAthleteNoteEx(athleteNoteEx===ex.id?null:ex.id);setAthleteNoteDraft('')}} title="Leave your coach a note" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:athleteNoteEx===ex.id?`${C.c1}22`:C.card,border:`1px solid ${athleteNoteEx===ex.id?C.c2:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:athleteNoteEx===ex.id?C.c3:C.muted,fontSize:11,fontWeight:600}}><Icon name="message" size={12} color={athleteNoteEx===ex.id?C.c3:C.muted}/></button>
@@ -3115,14 +3123,21 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
           <input value={qaName} onChange={e=>setQaName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&qaName.trim())quickAdd(qaName,qaMode)}} placeholder="Add exercise…" style={{flex:1,minWidth:0,background:'transparent',border:'none',outline:'none',color:C.white,fontSize:14,fontFamily:'inherit'}}/>
           {qaName.trim()&&<button onClick={()=>quickAdd(qaName,qaMode)} style={{background:C.amber,color:C.bg,border:'none',borderRadius:7,fontSize:12,fontWeight:700,padding:'6px 12px',cursor:'pointer',flexShrink:0}}>Add</button>}
         </div>
-        {qaName&&filtLib.length>0&&(
-          <div style={{background:C.ink,borderRadius:8,border:`1px solid ${C.border}`,maxHeight:160,overflowY:'auto',marginTop:8}}>
-            {filtLib.slice(0,7).map(e=>(
+        {qaName.trim()&&(
+          <div style={{background:C.ink,borderRadius:8,border:`1px solid ${C.border}`,maxHeight:220,overflowY:'auto',marginTop:8}}>
+            {filtLib.slice(0,8).map(e=>(
               <div key={e.id} onClick={()=>quickAdd(e.name,qaMode)} style={{padding:'8px 12px',cursor:'pointer',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:8}}>
                 <span style={{flex:1,fontSize:13,color:C.white}}>{e.name}</span>
-                <Tag v={e.pattern} color={PC[e.pattern]||C.c2} small/>
+                {!e.isLib&&<span style={{fontSize:9,color:C.c3,background:`${C.c1}1A`,borderRadius:5,padding:'1px 6px',flexShrink:0,whiteSpace:'nowrap'}}>library</span>}
+                {e.pattern&&<Tag v={e.pattern} color={PC[e.pattern]||C.c2} small/>}
               </div>
             ))}
+            {!qaExact&&(
+              <div onClick={()=>quickAdd(qaName,qaMode)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:9,background:`${C.amber}12`}}>
+                <span style={{fontSize:17,color:C.amber,fontWeight:700,lineHeight:1}}>+</span>
+                <span style={{flex:1,fontSize:13,color:C.amber,fontWeight:600}}>Create new exercise: "{qaName.trim()}"</span>
+              </div>
+            )}
           </div>
         )}
         <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:8,overflow:'hidden',marginTop:9}}>
@@ -5480,6 +5495,17 @@ function LibraryView({ sessions = [], av=0 }) {
   const [fl,      setFl]      = useState('')   // limb
   const [fm,      setFm]      = useState('')   // muscle
   const [expand,  setExpand]  = useState(null)
+  const [editTags, setEditTags] = useState(null)
+  const [tf, setTf] = useState({})
+  const [metaTick, setMetaTick] = useState(0)
+  const [mergeFor, setMergeFor] = useState(null)
+  const [mergeQ, setMergeQ] = useState('')
+  const lblS={fontSize:10,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}
+  const inpS={width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'9px 11px',color:C.white,fontSize:13,fontFamily:'inherit'}
+  const dlblS={fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}
+  const dvalS={fontSize:12,color:C.white}
+  const openEditTags = (ex) => { const m=getExMeta(ex.name)||{}; setTf({ pattern:m.pattern||'', muscles:m.muscles||(ex.isCustom?'':(ex.muscles||''))||'', equipment:m.equipment||(ex.equip&&ex.equip!=='Custom'?ex.equip:'')||'', demo:m.youtube_url||'', cues:m.description||'' }); setEditTags(ex.id) }
+  const saveTags = (ex) => { saveExMeta(ex.name, { pattern:(tf.pattern||'').toLowerCase(), muscles:tf.muscles||'', equipment:tf.equipment||'', youtube_url:tf.demo||'', description:tf.cues||'' }); setMetaTick(t=>t+1); setEditTags(null) }
 
   // Build combined exercise list: DEFAULT_LIB + all unique exercises from sessions
   const allExercises = React.useMemo(() => {
@@ -5504,18 +5530,34 @@ function LibraryView({ sessions = [], av=0 }) {
           useCount,
         }
       })
+    const overlay = (e) => {
+      const m = getExMeta(e.name) || {}
+      const pat = m.pattern ? (m.pattern.charAt(0).toUpperCase()+m.pattern.slice(1)) : e.pattern
+      return { ...e,
+        pattern: pat,
+        muscles: m.muscles || e.muscles,
+        equip:   m.equipment || e.equip,
+        _demo:   m.youtube_url || '',
+        _cues:   m.description || '',
+        _curated: !!(m.pattern||m.muscles||m.equipment||m.youtube_url||m.description),
+      }
+    }
     return [
       ...DEFAULT_LIB.map(e => ({
         ...e, isCustom: false,
         useCount: sessions.filter(s => safeExercises(s).some(ex => ex.name.toLowerCase() === e.name.toLowerCase())).length,
       })),
       ...sessionOnly,
-    ].sort((a,b) => {
+    ].map(overlay).sort((a,b) => {
       // Custom (session) exercises sorted by usage, library exercises alphabetically
       if(a.isCustom !== b.isCustom) return a.isCustom ? 1 : -1
       return a.name.localeCompare(b.name)
     })
-  }, [sessions, av])
+  }, [sessions, av, metaTick])
+
+  React.useEffect(()=>{ const h=()=>setMetaTick(t=>t+1); window.addEventListener('cgee-reg-changed',h); return ()=>window.removeEventListener('cgee-reg-changed',h) },[])
+  const approveNew = (a) => { resolveApproval(a.name,'approve'); const target=allExercises.find(e=>e.name.toLowerCase()===a.name.toLowerCase()); if(target){ setExpand(target.id); openEditTags(target) } }
+  const pending = getPendingApprovals()
 
   // Unique filter options derived from data
   const patterns  = [...new Set(allExercises.map(e => e.pattern).filter(Boolean))].sort()
@@ -5599,6 +5641,49 @@ function LibraryView({ sessions = [], av=0 }) {
         )}
       </Card>
 
+      {pending.length>0 && (
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:11,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8}}>Pending review · {pending.length}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {pending.map(a=>{
+              const merging = mergeFor===a.id
+              const opts = merging ? allExercises.filter(e=>e.name.toLowerCase()!==a.name.toLowerCase() && (!mergeQ||e.name.toLowerCase().includes(mergeQ.toLowerCase()))).slice(0,8) : []
+              return (
+                <div key={a.id} style={{background:C.card,border:`1px solid ${C.amber}40`,borderRadius:10,padding:'12px 14px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,marginBottom:10}}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:700,color:C.white}}>{a.name}</div>
+                      <div style={{fontSize:11,color:C.muted,marginTop:2}}>Added by {a.client_name||'a client'}{a.created_at?` · ${new Date(a.created_at).toLocaleDateString()}`:''}</div>
+                    </div>
+                    <span style={{fontSize:9,color:C.amber,background:`${C.amber}1A`,borderRadius:5,padding:'2px 7px',fontWeight:700,whiteSpace:'nowrap'}}>NEW</span>
+                  </div>
+                  {!merging ? (
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      <button onClick={()=>approveNew(a)} style={{flex:1,minWidth:130,background:C.amber,color:C.bg,border:'none',borderRadius:8,padding:'9px',fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Approve as new</button>
+                      <button onClick={()=>{setMergeFor(a.id);setMergeQ('')}} style={{flex:1,minWidth:130,background:'transparent',color:C.c3,border:`1px solid ${C.border}`,borderRadius:8,padding:'9px',fontWeight:700,fontSize:12.5,cursor:'pointer'}}>Merge into…</button>
+                      <button onClick={()=>resolveApproval(a.name,'dismiss')} style={{background:'transparent',color:C.faint,border:'none',padding:'9px 6px',fontSize:11.5,cursor:'pointer'}}>Dismiss</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <input value={mergeQ} onChange={e=>setMergeQ(e.target.value)} autoFocus placeholder="Search existing exercise…" style={{...inpS,marginBottom:8}}/>
+                      <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:180,overflowY:'auto'}}>
+                        {opts.map(o=>(
+                          <button key={o.id} onClick={()=>{ resolveApproval(a.name,'merge',o.name); setMergeFor(null) }} style={{textAlign:'left',background:C.ink,border:`1px solid ${C.border}`,borderRadius:7,padding:'8px 11px',color:C.white,fontSize:12.5,cursor:'pointer',display:'flex',alignItems:'center',gap:8}}>
+                            <span style={{flex:1}}>{o.name}</span>{o.pattern&&<span style={{fontSize:10,color:C.dim}}>{o.pattern}</span>}
+                          </button>
+                        ))}
+                        {opts.length===0&&<span style={{fontSize:11.5,color:C.faint,fontStyle:'italic',padding:'4px 2px'}}>No matches.</span>}
+                      </div>
+                      <button onClick={()=>setMergeFor(null)} style={{marginTop:8,background:'transparent',color:C.muted,border:'none',fontSize:11.5,cursor:'pointer',fontWeight:600}}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Results */}
       <div style={{display:'flex',flexDirection:'column',gap:4}}>
         {filtered.map(ex=>{
@@ -5627,13 +5712,41 @@ function LibraryView({ sessions = [], av=0 }) {
 
               {/* Expanded detail */}
               {isExpanded&&(
-                <div style={{background:C.ink,borderTop:`1px solid ${C.border}`,padding:'10px 14px',display:'flex',flexWrap:'wrap',gap:16}}>
-                  {ex.muscles&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Muscles</div><div style={{fontSize:12,color:C.white}}>{ex.muscles}</div></div>}
-                  {ex.equip&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Equipment</div><div style={{fontSize:12,color:C.white}}>{ex.equip}</div></div>}
-                  {ex.pattern&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Pattern</div><div style={{fontSize:12,color:C.white}}>{ex.pattern}</div></div>}
-                  {ex.quality&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Quality</div><div style={{fontSize:12,color:C.white}}>{ex.quality}</div></div>}
-                  {ex.limb&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Limb</div><div style={{fontSize:12,color:C.white}}>{ex.limb}</div></div>}
-                  {ex.isCustom&&<div style={{fontSize:11,color:C.faint,fontStyle:'italic',alignSelf:'center'}}>Detected from your session data</div>}
+                <div style={{background:C.ink,borderTop:`1px solid ${C.border}`,padding:'12px 14px'}}>
+                  {editTags===ex.id ? (
+                    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                      <div>
+                        <div style={lblS}>Movement pattern</div>
+                        <select value={tf.pattern} onChange={e=>setTf({...tf,pattern:e.target.value})} style={inpS}>
+                          <option value="">— auto-detect from name —</option>
+                          {PATTERNS.map(pn=><option key={pn} value={pn}>{pn}</option>)}
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                      <div><div style={lblS}>Muscles</div><input value={tf.muscles} onChange={e=>setTf({...tf,muscles:e.target.value})} placeholder="e.g. Quads, glutes" style={inpS}/></div>
+                      <div><div style={lblS}>Equipment</div><input value={tf.equipment} onChange={e=>setTf({...tf,equipment:e.target.value})} placeholder="e.g. Dumbbell" style={inpS}/></div>
+                      <div><div style={lblS}>Demo video (YouTube URL)</div><input value={tf.demo} onChange={e=>setTf({...tf,demo:e.target.value})} placeholder="https://youtube.com/..." style={inpS}/></div>
+                      <div><div style={lblS}>Coaching cues</div><textarea value={tf.cues} onChange={e=>setTf({...tf,cues:e.target.value})} rows={3} placeholder="Key cues for this exercise" style={{...inpS,resize:'vertical'}}/></div>
+                      <div style={{display:'flex',gap:8,marginTop:2}}>
+                        <button onClick={()=>saveTags(ex)} style={{flex:1,background:C.amber,color:C.bg,border:'none',borderRadius:8,padding:'10px',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Save details</button>
+                        <button onClick={()=>setEditTags(null)} style={{background:'transparent',color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:'10px 16px',fontWeight:600,fontSize:13,cursor:'pointer'}}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{display:'flex',flexWrap:'wrap',gap:16,alignItems:'flex-start'}}>
+                      {ex.muscles&&<div><div style={dlblS}>Muscles</div><div style={dvalS}>{ex.muscles}</div></div>}
+                      {ex.equip&&ex.equip!=='Custom'&&<div><div style={dlblS}>Equipment</div><div style={dvalS}>{ex.equip}</div></div>}
+                      {ex.pattern&&<div><div style={dlblS}>Pattern</div><div style={dvalS}>{ex.pattern}</div></div>}
+                      {ex.quality&&<div><div style={dlblS}>Quality</div><div style={dvalS}>{ex.quality}</div></div>}
+                      {ex.limb&&<div><div style={dlblS}>Limb</div><div style={dvalS}>{ex.limb}</div></div>}
+                      {ex._cues&&<div style={{flexBasis:'100%'}}><div style={dlblS}>Cues</div><div style={dvalS}>{ex._cues}</div></div>}
+                      {ex._demo&&<div style={{flexBasis:'100%'}}><a href={ex._demo} target="_blank" rel="noreferrer" style={{fontSize:12,color:C.c3,fontWeight:600,textDecoration:'none'}}>▶ Demo video</a></div>}
+                      <div style={{flexBasis:'100%',display:'flex',alignItems:'center',gap:12,marginTop:2}}>
+                        <button onClick={()=>openEditTags(ex)} style={{background:`${C.amber}14`,color:C.amber,border:`1px solid ${C.amber}55`,borderRadius:7,padding:'6px 12px',fontSize:11.5,fontWeight:700,cursor:'pointer'}}>Edit details</button>
+                        {ex.isCustom&&!ex._curated&&<span style={{fontSize:11,color:C.faint,fontStyle:'italic'}}>Auto-detected — add tags to refine</span>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -6557,13 +6670,25 @@ const SUB_SCOPES = [
 ]
 
 function getSubSuggestions(exerciseName, allSessions) {
-  const pat = detectPattern(exerciseName)
-  const fromLib = DEFAULT_LIB.filter(e=>e.name!==exerciseName&&detectPattern(e.name)===pat)
+  const pat = patternByName(exerciseName)
+  const fromLib = DEFAULT_LIB.filter(e=>e.name!==exerciseName&&patternByName(e.name)===pat)
   const fromSess = [...new Set(
     allSessions.flatMap(s=>safeExercises(s).filter(e=>!e.isWarmup&&e.name!==exerciseName).map(e=>e.name))
-  )].filter(n=>detectPattern(n)===pat&&!fromLib.some(e=>e.name===n))
-    .map(n=>({name:n,pattern:detectPattern(n),muscles:'',equip:'',isLib:false}))
+  )].filter(n=>patternByName(n)===pat&&!fromLib.some(e=>e.name===n))
+    .map(n=>({name:n,pattern:patternByName(n),muscles:(getExMeta(n)||{}).muscles||'',equip:(getExMeta(n)||{}).equipment||'',isLib:false}))
   return [...fromLib.map(e=>({...e,isLib:true})),...fromSess].slice(0,14)
+}
+
+// Resolve a pattern by name, preferring a coach-set tag (exercise_meta) over name-derived
+function patternByName(name){ const meta=getExMeta(name); const mp=meta&&meta.pattern?String(meta.pattern).trim().toLowerCase():''; if(mp) return mp; return detectPattern(name) }
+// Resolve an exercise's movement pattern: coach tag > stored pattern > name-derived
+function exPatternOf(e){ const meta=getExMeta(e&&e.name); const mp=meta&&meta.pattern?String(meta.pattern).trim().toLowerCase():''; if(mp) return mp; const p=(e&&e.pattern?String(e.pattern):'').trim().toLowerCase(); if(p) return p; return detectPattern(e&&e.name) }
+// Full searchable exercise library: defaults + every exercise used across sessions
+function getFullExLib(allSessions){
+  const seen=new Map()
+  DEFAULT_LIB.forEach(e=>{ const k=e.name.toLowerCase(); if(!seen.has(k)) seen.set(k,{name:e.name,pattern:(e.pattern||detectPattern(e.name)),muscles:e.muscles||'',equip:e.equip||'',isLib:true}) })
+  ;(allSessions||[]).forEach(s=> safeExercises(s).forEach(e=>{ if(e.isWarmup) return; const nm=(resolveExName(e.name)||e.name||'').trim(); if(!nm) return; const k=nm.toLowerCase(); if(!seen.has(k)) seen.set(k,{name:nm,pattern:exPatternOf(e),muscles:'',equip:'',isLib:false}) }) )
+  return [...seen.values()].sort((a,b)=>a.name.localeCompare(b.name))
 }
 
 function SubstitutionModal({ ex, sessionId, clientId, programId, weekId, allSessions, onSave, onClose }) {
@@ -6572,7 +6697,9 @@ function SubstitutionModal({ ex, sessionId, clientId, programId, weekId, allSess
   const [reason,  setReason]  = useState('')
   const [scope,   setScope]   = useState('session')
   const suggestions = React.useMemo(()=>getSubSuggestions(ex.name, allSessions),[ex.name, allSessions.length])
-  const filtered = suggestions.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())||(s.muscles||'').toLowerCase().includes(search.toLowerCase()))
+  const fullLib = React.useMemo(()=>getFullExLib(allSessions),[(allSessions||[]).length])
+  const sq = search.trim().toLowerCase()
+  const filtered = (sq ? fullLib.filter(s=>s.name.toLowerCase()!==ex.name.toLowerCase()&&(s.name.toLowerCase().includes(sq)||(s.muscles||'').toLowerCase().includes(sq))) : suggestions).slice(0,30)
   const canSave = (chosen.trim()&&reason)
   const save = () => {
     if(!canSave) return
@@ -6594,7 +6721,7 @@ function SubstitutionModal({ ex, sessionId, clientId, programId, weekId, allSess
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search alternatives…" style={{...iS,paddingLeft:32}}/>
             <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:C.faint,fontSize:14,pointerEvents:'none'}}>⌕</span>
           </div>
-          <label style={{...lS,marginBottom:6,display:'block'}}>Similar exercises ({detectPattern(ex.name)})</label>
+          <label style={{...lS,marginBottom:6,display:'block'}}>{search.trim()?'Library matches':('Similar exercises ('+detectPattern(ex.name)+')')}</label>
           <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:14}}>
             {filtered.length===0&&<p style={{color:C.faint,fontSize:12,margin:0}}>No library matches — type any name below.</p>}
             {filtered.map(s=>(
@@ -7384,7 +7511,7 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
   const [addOpen,setAddOpen]=useState(false)
   const [skipPend,setSkipPend]=useState(null)
   const [finishOpen,setFinishOpen]=useState(false)
-  const addExercise = (payload)=>{ if(!updateSession) return; const nm=((payload&&payload.name)||'').trim(); if(!nm) return; const n=Math.max(1,parseInt(payload.sets)||1); const reps=String((payload&&payload.reps)||''); const newEx={ id:uid(), name:nm, blockLabel:'', sequenceGroup:'', sequenceType:'single', sequenceOrder:0, isWarmup:false, sets:String(n), reps, load:String((payload&&payload.load)||''), rpe:'', tempo:'', rest:'', notes:'', collect:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:Array.from({length:n},()=>({reps})), targetCols:['reps'], loggedSets:[], client_added:true, added_at:new Date().toISOString() }; updateSession(sess.id, {exercises:[...safeExercises(sess), newEx]}); setAddOpen(false) }
+  const addExercise = (payload)=>{ if(!updateSession) return; const nm=((payload&&payload.name)||'').trim(); if(!nm) return; const n=Math.max(1,parseInt(payload.sets)||1); const reps=String((payload&&payload.reps)||''); const match=findExerciseMatch(nm, allSessions); const useName=match||nm; const isNew=!match; const newEx={ id:uid(), name:useName, blockLabel:'', sequenceGroup:'', sequenceType:'single', sequenceOrder:0, isWarmup:false, sets:String(n), reps, load:String((payload&&payload.load)||''), rpe:'', tempo:'', rest:'', notes:'', collect:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:Array.from({length:n},()=>({reps})), targetCols:['reps'], loggedSets:[], client_added:true, pending_approval:isNew, added_at:new Date().toISOString() }; if(isNew){ addApproval({name:nm, client_id:clientId, client_name:clientName, session_id:sess.id}) } updateSession(sess.id, {exercises:[...safeExercises(sess), newEx]}); setAddOpen(false) }
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
   const _hasData = (z) => ['completedReps','completedLoad','completedTime','completedDistance','speed','rpm','power','energy','hr','bandColour'].some(k=>z&&z[k]!=null&&String(z[k]).trim()!=='')
@@ -8214,6 +8341,41 @@ function ReadinessDash({ clients, go }){
 let _SUBS = []
 function getSubsForClient(clientId){ return _SUBS.filter(x=>x.client_id===clientId).sort((a,b)=> (a.created_at<b.created_at?1:-1)) }
 async function hydrateSubs(token){ try{ const r=await sb.get('substitutions','select=*&order=created_at.desc&limit=300',token); _SUBS=Array.isArray(r)?r:[] }catch(e){} return _SUBS }
+
+// ─── EXERCISE APPROVALS — client-created exercises awaiting coach review ───────
+let _APPROVALS = []
+async function hydrateApprovals(token){ try{ const r=await sb.get('exercise_approvals','select=*&order=created_at.desc&limit=200',token); _APPROVALS=Array.isArray(r)?r:[] }catch(e){} return _APPROVALS }
+function getPendingApprovals(){ return _APPROVALS.filter(a=>a&&a.status==='pending') }
+// Does this typed name already match a known library exercise? Returns canonical name or null.
+function findExerciseMatch(name, allSessions){
+  const nm=(name||'').trim(); if(!nm) return null
+  const lc=nm.toLowerCase()
+  const canon=resolveExName(nm)
+  if(canon && canon.toLowerCase()!==lc) return canon
+  const lib=getFullExLib(allSessions||[])
+  const exact=lib.find(e=>e.name.toLowerCase()===lc); if(exact) return exact.name
+  const norm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim()
+  const n2=norm(nm)
+  const fz=lib.find(e=>norm(e.name)===n2); if(fz) return fz.name
+  return null
+}
+function addApproval({name, client_id, client_name, session_id}){
+  const nm=(name||'').trim(); if(!nm) return
+  const k=nm.toLowerCase()
+  if(_APPROVALS.some(a=>a.name_key===k && a.status==='pending')) return
+  const row={ id:uid(), name:nm, name_key:k, client_id:client_id||null, client_name:client_name||'', session_id:session_id||null, status:'pending', merged_into:null, created_at:new Date().toISOString(), resolved_at:null }
+  _APPROVALS=[row,..._APPROVALS]
+  try{ fetch(`${SUPABASE_URL}/rest/v1/exercise_approvals`,{method:'POST',headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'},body:JSON.stringify(row)}).catch(()=>{}) }catch(e){}
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+}
+function resolveApproval(name, action, mergeInto){
+  const k=(name||'').toLowerCase()
+  if(action==='merge' && mergeInto){ regMerge([name], mergeInto) }
+  const st = action==='merge' ? 'merged' : (action==='dismiss' ? 'dismissed' : 'approved')
+  _APPROVALS=_APPROVALS.map(a=> (a.name_key===k && a.status==='pending') ? {...a, status:st, merged_into:mergeInto||null, resolved_at:new Date().toISOString()} : a)
+  try{ fetch(`${SUPABASE_URL}/rest/v1/exercise_approvals?name_key=eq.${encodeURIComponent(k)}&status=eq.pending`,{method:'PATCH',headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'},body:JSON.stringify({status:st, merged_into:mergeInto||null, resolved_at:new Date().toISOString()})}).catch(()=>{}) }catch(e){}
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+}
 function saveSub(row){
   const full={ ...row, created_at:new Date().toISOString() }
   _SUBS.unshift(full)
@@ -8226,9 +8388,10 @@ function ClientSubModal({ ex, allSessions, programName, onApply, onClose }){
   const [reason,setReason]=useState('')
   const [scope,setScope]=useState('session')
   const suggestions = React.useMemo(()=>getSubSuggestions(ex.name, allSessions||[]),[ex.name,(allSessions||[]).length])
+  const fullLib = React.useMemo(()=>getFullExLib(allSessions||[]),[(allSessions||[]).length])
   const q=search.trim().toLowerCase()
-  const filtered = suggestions.filter(s=>!q||s.name.toLowerCase().includes(q))
-  const typedNew = search.trim() && !suggestions.some(s=>s.name.toLowerCase()===q)
+  const filtered = (q ? fullLib.filter(s=>s.name.toLowerCase()!==ex.name.toLowerCase()&&s.name.toLowerCase().includes(q)) : suggestions).slice(0,30)
+  const typedNew = search.trim() && !filtered.some(s=>s.name.toLowerCase()===q)
   const canSave = chosen.trim() && reason
   return (
     <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
@@ -8239,7 +8402,7 @@ function ClientSubModal({ ex, allSessions, programName, onApply, onClose }){
         </div>
         <div style={{padding:'4px 18px 8px',overflowY:'auto'}}>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or type any exercise..." style={{width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,marginBottom:12,fontFamily:'inherit'}}/>
-          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Similar movements</div>
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>{q?'Library matches':'Similar movements'}</div>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:8}}>
             {typedNew && <button onClick={()=>setChosen(search.trim())} style={{textAlign:'left',background:chosen===search.trim()?`${C.amber}18`:C.card,border:`1px solid ${chosen===search.trim()?C.amber:C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,fontWeight:600,cursor:'pointer'}}>Use "{search.trim()}"</button>}
             {filtered.length===0 && !typedNew && <div style={{fontSize:12,color:C.faint,fontStyle:'italic'}}>No similar matches - type any name above.</div>}
@@ -9087,6 +9250,7 @@ function MainApp({ session, onSignOut }) {
         await hydrateVideoReqs(token)
         await hydrateWellness(token)
         await hydrateSubs(token)
+        await hydrateApprovals(token)
         const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl,cprof] = await Promise.all([
           sb.get('clients','select=*',token), sb.get('programs','select=*',token),
           sb.get('program_weeks','select=*',token), sb.get('sessions','select=*',token),
