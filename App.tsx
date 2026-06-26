@@ -94,7 +94,7 @@ const _densityPad = { compact:'8px 12px', standard:'14px 16px', spacious:'22px 2
 // Three surface levels create depth without heavy borders.
 // Slight blue undertone (cool, premium) instead of pure neutral black.
 const C = {
-  bg:'#040814', ink:'#080D1C', card:'#0F1525', lift:'#1A2236',
+  bg:'#040814', midnight:'#0B1020', ink:'#080D1C', card:'#0F1525', lift:'#1A2236',
   white:'#FFFFFF', c1:'#2563EB', c2:'#3B82F6', c3:'#93C5FD',
   amber:_SC.accentColor||'#FFA500', gold:'#FACC15', red:'#EF4444', orange:'#F97316',
   green:'#22C55E', purple:'#8B5CF6',
@@ -352,24 +352,23 @@ function parseCSV(text){
     const targets   = [g(row,cx.t1),g(row,cx.t2),g(row,cx.t3),g(row,cx.t4)]
     const rawLoads  = [g(row,cx.l1),g(row,cx.l2),g(row,cx.l3),g(row,cx.l4)]
     // Parse each set according to load rules:
-    //   empty cell   → skipped / not performed
-    //   * - 0 bw     → completed, no added weight
+    //   blank cell   → NOT logged / incomplete (no set created — do not infer BW)
+    //   * - 0 bw     → completed at bodyweight / no added weight
     //   any value    → completed with that load (preserve raw)
     const NO_WEIGHT = new Set(['*','-','0','bw','bodyweight','b/w'])
     const loggedSets = targets.map((target,i)=>{
       const t    = (target||'').trim()
       const load = (rawLoads[i]||'').trim()
-      if(!t && !load) return null   // set position not prescribed — skip entirely
-      const isSkipped  = !load
+      if(!load) return null   // blank weight cell → not logged / incomplete (never inferred as BW)
       const isNoWeight = NO_WEIGHT.has(load.toLowerCase())
       return {
         id:uid(), setNumber:i+1,
         targetReps:    t,
-        completedLoad: isSkipped||isNoWeight ? '' : load,
-        completedReps: isSkipped ? '' : t,
+        completedLoad: isNoWeight ? '' : load,
+        completedReps: t,
         rpe:   '',
         notes: isNoWeight ? 'No added weight' : '',
-        skipped: isSkipped,
+        skipped: false,
       }
     }).filter(Boolean)
     const isWarmup = ['true','1','yes'].includes((g(row,cx.warmup)||'').toLowerCase())
@@ -393,10 +392,10 @@ const safeExercises = (sess) => {
 // count as done without requiring weight entry
 
 
-const setIsDone = ls => !!ls && (ls.manualDone===true || ls.confirmed===true || [ls.completedReps,ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
+const setIsDone = ls => !!ls && (ls.skipped===true || ls.manualDone===true || ls.confirmed===true || [ls.completedReps,ls.completedLoad,ls.completedTime,ls.completedDistance,ls.speed,ls.rpm,ls.power,ls.energy,ls.hr,ls.bandColour].some(v=>v!=null&&String(v).trim()!==''))
 function fmtN(v){ const m=String(v==null?'':v); return /^-?\d+(\.\d+)?$/.test(m)?String(parseFloat(m)):m }
 function wtDisplay(ls){ if(!ls) return {bw:true,text:'BW'}; const band=ls.bandColour&&String(ls.bandColour).trim(); if(band) return {band:true,text:band}; const L=ls.completedLoad==null?'':String(ls.completedLoad).trim(); if(L!==''&&L!=='-'&&L.toLowerCase()!=='x'){ if(/^-?\d+(\.\d+)?$/.test(L)) return {kg:true,text:fmtN(L)}; return {raw:true,text:L} } return {bw:true,text:'BW'} }
-function sessionDoneStats(sess){ const exs=safeExercises(sess).filter(e=>!e.isWarmup); let total=0,done=0; exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=ex.force_complete?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); total+=p; done+=d }); return {done,total} }
+function sessionDoneStats(sess){ const exs=safeExercises(sess).filter(e=>!e.isWarmup); let total=0,done=0; exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=(ex.skipped||ex.force_complete)?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); total+=p; done+=d }); return {done,total} }
 function rollupPct(list){ let t=0,d=0; (list||[]).forEach(s=>{ const st=sessionDoneStats(s); t+=st.total; d+=st.done }); return t>0?Math.round(d/t*100):0 }
 
 function computeSessionStatus(sess) {
@@ -410,7 +409,7 @@ function computeSessionStatus(sess) {
   for(const ex of exs){
     const prescribed = parseInt(ex.sets) || 1
     // force_complete on an exercise counts all its sets as done
-    const done = ex.force_complete
+    const done = (ex.skipped||ex.force_complete)
       ? prescribed
       : (ex.loggedSets||[]).filter(setIsDone).length
     totalPrescribed += prescribed
@@ -659,7 +658,8 @@ async function hydrateExMeta(token){
 }
 function saveExMeta(name, fields){
   const k=exMetaKey(name); if(!k) return Promise.resolve()
-  const row = { name_key:k, display_name: resolveExName(name)||name||'', description:(fields&&fields.description)||'', youtube_url:(fields&&fields.youtube_url)||'', video_url:(fields&&fields.video_url)||((_EX_META[k]&&_EX_META[k].video_url)||''), updated_at:new Date().toISOString() }
+  const prev=_EX_META[k]||{}; const pick=(key)=> (fields && fields[key]!==undefined) ? fields[key] : (prev[key]||'')
+  const row = { name_key:k, display_name: resolveExName(name)||name||'', description:pick('description'), youtube_url:pick('youtube_url'), video_url:(fields&&fields.video_url!==undefined?fields.video_url:(prev.video_url||'')), pattern:pick('pattern'), muscles:pick('muscles'), equipment:pick('equipment'), updated_at:new Date().toISOString() }
   _EX_META[k]=row
   if(row.youtube_url||row.video_url) clearVideoReqs(name)
   window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
@@ -722,6 +722,22 @@ function clearVideoReqs(name){
   _VID_REQS=_VID_REQS.filter(r=>r.name_key!==k)
   try{ fetch(`${SUPABASE_URL}/rest/v1/video_requests?name_key=eq.${encodeURIComponent(k)}&status=eq.pending`, { method:'PATCH', headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'}, body:JSON.stringify({status:'fulfilled'}) }).catch(()=>{}) }catch(e){}
 }
+// ─── DAILY WELLNESS / READINESS ───────────────────────────────────────────────
+let _WELLNESS = []
+function getWellnessToday(clientId){ const d=new Date().toISOString().split('T')[0]; return _WELLNESS.find(w=>w.client_id===clientId && w.log_date===d) }
+function getWellnessOn(clientId,dateStr){ return _WELLNESS.find(w=>w.client_id===clientId && w.log_date===dateStr) }
+function getWellnessFor(clientId,n=14){ return _WELLNESS.filter(w=>w.client_id===clientId).sort((a,b)=> a.log_date<b.log_date?1:-1).slice(0,n) }
+function wellnessScore(w){ if(!w) return null; const pos=[w.sleep,w.energy,w.mood].filter(v=>v!=null&&v>0); const inv=[w.soreness,w.stress].filter(v=>v!=null&&v>0).map(v=>6-v); const all=[...pos,...inv]; if(!all.length) return null; const avg=all.reduce((a,b)=>a+b,0)/all.length; return Math.round((avg-1)/4*100) }
+async function hydrateWellness(token){ try{ const r=await sb.get('wellness_logs','select=*&order=log_date.desc&limit=400',token); _WELLNESS=Array.isArray(r)?r:[] }catch(e){} return _WELLNESS }
+function saveWellness(clientId, fields, dateStr){
+  const d=dateStr||new Date().toISOString().split('T')[0]
+  const row={ client_id:clientId, log_date:d, ...fields }
+  const i=_WELLNESS.findIndex(w=>w.client_id===clientId && w.log_date===d)
+  if(i>=0) _WELLNESS[i]={..._WELLNESS[i],...row}; else _WELLNESS.unshift(row)
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{ return fetch(`${SUPABASE_URL}/rest/v1/wellness_logs?on_conflict=client_id,log_date`, { method:'POST', headers:{...hdrs(CGEE_TOKEN),Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify(row) }).catch(()=>{}) }catch(e){ return Promise.resolve() }
+}
+
 function DemoModal({ url, title, onClose }){
   const embed = ytEmbed(url)
   return (
@@ -1267,6 +1283,27 @@ function Dashboard({ clients, programs, weeks, sessions, go, messages, subs, mar
       onClick: null
     })
   }
+  const pendingApprovals = getPendingApprovals()
+  if(pendingApprovals.length > 0) {
+    priorities.push({
+      kind:'approval', icon:'clipboard',
+      title: `${pendingApprovals.length} new exercise${pendingApprovals.length!==1?'s':''} to review`,
+      meta: pendingApprovals[0] ? `Added by ${pendingApprovals[0].client_name||'a client'}` : '',
+      color: C.amber,
+      onClick: () => go('library')
+    })
+  }
+  const wellnessFlags = activeClients.map(c=>{ const w=getWellnessFor(c.id,3)[0]; if(!w) return null; const sc=wellnessScore(w); if(w.pain_flag) return {c, kind:'pain'}; if(sc!=null && sc<40) return {c, kind:'low'}; return null }).filter(Boolean)
+  if(wellnessFlags.length > 0) {
+    const f0=wellnessFlags[0]
+    priorities.push({
+      kind:'wellness', icon:'flag',
+      title: `${wellnessFlags.length} readiness flag${wellnessFlags.length!==1?'s':''}`,
+      meta: f0 ? `${f0.c.name}: ${f0.kind==='pain'?'pain flagged':'low readiness'}` : '',
+      color: C.red,
+      onClick: () => go('client', {clientId:f0.c.id})
+    })
+  }
   if(upcoming.length > 0) {
     const todayCount = upcoming.filter(u=>{
       const d = u.date; const ts = todayStart.getTime()
@@ -1766,6 +1803,32 @@ function ClientAccessPanel({ client, updateClient }) {
     } catch(err){ setOk(false); setMsg('Error: '+((err && err.message)||'failed')) }
     finally{ setBusy(false) }
   }
+  const inviteByEmail = async () => {
+    if(busy) return
+    const e = (email||'').trim().toLowerCase()
+    if(!e || !e.includes('@')){ setOk(false); setMsg('Enter a valid email address.'); return }
+    setBusy(true); setMsg(''); setCreds(null)
+    try {
+      const rndPw = 'Cg'+Math.random().toString(36).slice(2,11)+Math.random().toString(36).slice(2,6).toUpperCase()+'!9'
+      const data = await sb.signUp(e, rndPw)
+      const newId = (data && data.user && data.user.id) || (data && data.id)
+      if(newId){
+        updateClient(client.id,{auth_user_id:newId, email:e, must_set_password:true})
+        try { await sb.recover(e) } catch(x){}
+        setOk(true); setMsg('Invite sent to '+e+'. They get an email with a link to set their own password — then they\u2019re straight in. Nothing to hand over.')
+      } else {
+        const emsg = (data && (data.msg||data.error_description||data.error)) || ''
+        if(/regist|already|exist/i.test(emsg)){
+          updateClient(client.id,{email:e})
+          try { await sb.recover(e) } catch(x){}
+          setOk(true); setMsg('That email already has an account \u2014 sent them a set-password link instead.')
+        } else {
+          setOk(false); setMsg(emsg || 'Could not send the invite. Check the email and try again.')
+        }
+      }
+    } catch(err){ setOk(false); setMsg('Error: '+((err && err.message)||'failed')) }
+    finally{ setBusy(false) }
+  }
   return (
     <Card style={{marginBottom:16,borderColor:C.amber+'30'}}>
       <Row style={{alignItems:'center',gap:8}}>
@@ -1781,11 +1844,12 @@ function ClientAccessPanel({ client, updateClient }) {
         </div>
       ) : (
         <div style={{marginTop:10}}>
-          <p style={{fontSize:12,color:C.muted,margin:'0 0 8px'}}>Create a login so this client can use the app on their own phone.</p>
+          <p style={{fontSize:12,color:C.muted,margin:'0 0 8px'}}>Invite this client by email. They get a link to set their own password and start training on their phone \u2014 no password to hand over.</p>
           <Row style={{gap:8,flexWrap:'wrap',alignItems:'center'}}>
             <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="client@email.com" style={{flex:1,minWidth:160,background:C.midnight,border:'1px solid '+C.border,borderRadius:7,padding:'9px 11px',color:C.white,fontSize:13,outline:'none'}}/>
-            <Btn label={busy?'Creating...':'Create login'} small onClick={createLogin}/>
+            <Btn label={busy?'Sending...':'Send invite'} small onClick={inviteByEmail}/>
           </Row>
+          <button onClick={createLogin} disabled={busy} style={{marginTop:9,background:'none',border:'none',color:C.faint,fontSize:11,fontWeight:600,cursor:busy?'default':'pointer',padding:0,textDecoration:'underline'}}>or create an instant login with a temp password</button>
         </div>
       )}
       {msg && <p style={{fontSize:12,color:ok?C.green:C.orange,margin:'10px 0 0',fontWeight:600,wordBreak:'break-word'}}>{msg}</p>}
@@ -1807,7 +1871,7 @@ function ClientAccessPanel({ client, updateClient }) {
     </Card>
   )
 }
-function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram, updateProgram, deleteProgram, saving, go }) {
+function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram, updateProgram, deleteProgram, saving, go, updateClient }) {
   const client = clients.find(c=>c.id===clientId)
   const clientProgs = [...programs.filter(p=>p.client_id===clientId)]
     .sort((a,b)=>{
@@ -1868,6 +1932,48 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
   return (
     <div style={{padding:20,maxWidth:860,margin:'0 auto'}}>
       <Breadcrumb items={[{label:'Clients',onClick:()=>go('clients')},{label:client.name}]}/>
+      {(()=>{ const ne=Array.isArray(client.no_equipment)?client.no_equipment:[]; const fav=Array.isArray(client.fav_exercises)?client.fav_exercises:[]; const lfav=Array.isArray(client.least_fav_exercises)?client.least_fav_exercises:[]; if(!ne.length&&!fav.length&&!lfav.length) return null; const clashes=[...new Set(sessions.filter(s=>s.client_id===client.id).flatMap(s=>safeExercises(s)).filter(e=>!e.isWarmup).map(e=>e.name).filter(nm=>exerciseMissingEquip(nm,ne).length>0))]; return (
+        <Panel style={{marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.white,textTransform:'uppercase',letterSpacing:'0.05em',fontFamily:'Space Grotesk,sans-serif',marginBottom:12}}>Equipment & preferences</div>
+          {ne.length>0 && <div style={{marginBottom:12}}><div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>No access to</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{ne.map(x=>(<span key={x} style={{fontSize:11,fontWeight:600,color:C.red,background:`${C.red}14`,border:`1px solid ${C.red}40`,borderRadius:7,padding:'3px 9px'}}>{x}</span>))}</div></div>}
+          {clashes.length>0 && <div style={{marginBottom:12,background:`${C.orange}12`,border:`1px solid ${C.orange}40`,borderRadius:9,padding:'9px 11px'}}><div style={{fontSize:11.5,fontWeight:700,color:C.orange,marginBottom:4}}>{clashes.length} programmed exercise{clashes.length>1?'s':''} may need missing equipment</div><div style={{fontSize:11.5,color:C.muted,lineHeight:1.5}}>{clashes.slice(0,8).join(', ')}{clashes.length>8?', ...':''}</div></div>}
+          <div style={{display:'flex',gap:18,flexWrap:'wrap'}}>
+            {fav.length>0 && <div><div style={{fontSize:10.5,color:C.green,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Favourites</div><div style={{display:'flex',flexWrap:'wrap',gap:5}}>{fav.map(x=>(<span key={x} style={{fontSize:11,color:C.green,background:`${C.green}14`,borderRadius:6,padding:'3px 8px'}}>{x}</span>))}</div></div>}
+            {lfav.length>0 && <div><div style={{fontSize:10.5,color:C.orange,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}}>Least favourite</div><div style={{display:'flex',flexWrap:'wrap',gap:5}}>{lfav.map(x=>(<span key={x} style={{fontSize:11,color:C.orange,background:`${C.orange}14`,borderRadius:6,padding:'3px 8px'}}>{x}</span>))}</div></div>}
+          </div>
+        </Panel>
+      ) })()}
+      {(()=>{ const logs=getWellnessFor(client.id,7); const latest=logs[0]; const sc=wellnessScore(latest); const recentRpe=sessions.filter(x=>x.client_id===client.id&&x.session_rpe).sort((a,b)=>new Date(b.completed_at||0)-new Date(a.completed_at||0)).slice(0,5); return (
+        <Panel style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.white,textTransform:'uppercase',letterSpacing:'0.05em',fontFamily:'Space Grotesk,sans-serif'}}>Readiness</span>
+            {latest&&latest.pain_flag&&<span style={{fontSize:10,fontWeight:700,color:C.orange,background:`${C.orange}1A`,borderRadius:6,padding:'2px 8px'}}>PAIN FLAGGED</span>}
+          </div>
+          {latest ? (
+            <div style={{display:'flex',alignItems:'center',gap:18}}>
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',minWidth:54}}>
+                <span style={{fontSize:30,fontWeight:700,color:sc!=null?trafficColor(sc):C.faint,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{sc!=null?sc:'--'}</span>
+                <span style={{fontSize:9,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginTop:3}}>ready today</span>
+              </div>
+              <div style={{flex:1}}>
+                <div style={{display:'flex',gap:4,alignItems:'flex-end',height:36,marginBottom:5}}>{logs.slice(0,7).reverse().map((l,i)=>{ const s2=wellnessScore(l); const h=s2!=null?Math.max(5,Math.round(s2/100*34)):5; return <div key={i} title={`${l.log_date}: ${s2!=null?s2:'-'}`} style={{flex:1,height:h,borderRadius:3,background:s2!=null?trafficColor(s2):C.lift}}/> })}</div>
+                <span style={{fontSize:10.5,color:C.muted}}>Last 7 check-ins, most recent {latest.log_date}</span>
+              </div>
+            </div>
+          ) : client.wellness_enabled ? (
+            <p style={{fontSize:12.5,color:C.muted,fontStyle:'italic'}}>Readiness enabled, no check-ins logged yet.</p>
+          ) : (
+            <div>
+              <p style={{fontSize:12.5,color:C.muted,fontStyle:'italic',marginBottom:10}}>Wellness check-ins are off for {client.name}. Turn them on so they can log daily readiness, sleep, soreness and pain from their app.</p>
+              {updateClient && <button onClick={()=>updateClient(client.id,{wellness_enabled:true})} style={{background:C.amber,color:C.bg,border:'none',borderRadius:8,padding:'9px 16px',fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Enable wellness check-ins</button>}
+            </div>
+          )}
+          {recentRpe.length>0 && <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+            <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Recent session effort</div>
+            <div style={{display:'flex',gap:7,flexWrap:'wrap'}}>{recentRpe.map(x=>(<span key={x.id} style={{fontSize:11,fontWeight:700,color:C.amber,background:`${C.amber}14`,border:`1px solid ${C.amber}40`,borderRadius:7,padding:'4px 9px'}}>RPE {fmtN(x.session_rpe)}{x.duration_seconds?` - ${Math.round(x.duration_seconds/60)}m`:''}</span>))}</div>
+          </div>}
+        </Panel>
+      ) })()}
       <Row style={{alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
         <div>
           <h1 style={{fontSize:22,fontWeight:700,color:C.white,marginBottom:2}}>{client.name}</h1>
@@ -2473,7 +2579,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
   const blockLetters = () => { const seen=[]; mainEx.forEach(e=>{ const L=(e.blockLabel||'').replace(/[^A-Za-z]/g,'').toUpperCase().charAt(0); if(L&&!seen.includes(L)) seen.push(L) }); return seen }
   const lastLetter = () => { const ls=blockLetters(); return ls.length?ls[ls.length-1]:'A' }
   const nextBlockLabel = (mode) => { const ABC='ABCDEFGHIJKLMNOPQRSTUVWXYZ'; if(mode==='super'){ const L=lastLetter(); const n=mainEx.filter(e=>(e.blockLabel||'').toUpperCase().charAt(0)===L).length; return L+(n+1) } const li=ABC.indexOf(lastLetter()); const L=mainEx.length?ABC[Math.min(li+1,25)]:'A'; return L+'1' }
-  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], _metaDesc:(getExMeta(nm)||{}).description||'', _metaYt:(getExMeta(nm)||{}).youtube_url||'', _pnote:getExPNote(programId, nm) }); setQaName('') }
+  const quickAdd = (name, mode) => { const nm=(name||'').trim(); if(!nm) return; const warm=qaWarm; const label= warm ? '' : nextBlockLabel(mode); const id=uid(); const base={ id, name:nm, pattern:detectPattern(nm), blockLabel:label, sequenceGroup:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], loggedSets:[] }; saveExs([...exs, base]); setEditExId(id); setEditAdv(false); setEditExF({ name:nm, blockLabel:label, labelColor:'', sets:'3', reps:'8', load:'', rpe:'', tempo:'', rest: warm?'':'90s', notes:'', isWarmup:warm, sequenceGroup:'', force_complete:false, videoUrl:'', collect: warm?['reps']:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:[{reps:'8'},{reps:'8'},{reps:'8'}], targetCols: warm?['reps']:['reps','load'], _metaDesc:(getExMeta(nm)||{}).description||'', _metaYt:(getExMeta(nm)||{}).youtube_url||'', _pnote:getExPNote(programId, nm) }); setQaName('') }
   const groupTypeName = (n) => n===1?'Single':n===2?'Superset':n===3?'Tri-set':'Circuit'
   const applyGroupColor = (ids,color) => { saveExs(exs.map(e=>ids.has(e.id)?{...e,labelColor:color||''}:e)); setColorPickerGroup(null) }
   const renameSection = (letter, name) => {
@@ -2504,7 +2610,15 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     saveExs(arr)
   }
 
-  const filtLib = DEFAULT_LIB.filter(e=>!qaName||e.name.toLowerCase().includes(qaName.toLowerCase())||e.pattern.toLowerCase().includes(qaName.toLowerCase()))
+  const libAll = React.useMemo(()=>{
+    const seen=new Map()
+    DEFAULT_LIB.forEach(e=>{ const k=e.name.toLowerCase(); if(!seen.has(k)) seen.set(k,{id:'lib-'+k, name:e.name, pattern:e.pattern||'', isLib:true}) })
+    ;(sessions||[]).forEach(ss=> safeExercises(ss).forEach(ex=>{ const nm=(resolveExName(ex.name)||ex.name||'').trim(); if(!nm) return; const k=nm.toLowerCase(); if(!seen.has(k)) seen.set(k,{id:'sess-'+k, name:nm, pattern:exPatternOf(ex), isLib:false}) }) )
+    return [...seen.values()].sort((a,b)=>a.name.localeCompare(b.name))
+  }, [sessions])
+  const qaQ = qaName.trim().toLowerCase()
+  const filtLib = libAll.filter(e=>!qaQ||e.name.toLowerCase().includes(qaQ)||(e.pattern||'').toLowerCase().includes(qaQ))
+  const qaExact = !!qaQ && libAll.some(e=>e.name.toLowerCase()===qaQ)
 
   // ── Compact exercise row with click-to-expand inline editor ──────────────
   const ExRow = ({ ex }) => {
@@ -2652,11 +2766,10 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
                   </div>
                 )}
               </div>
-            <G3 style={{marginBottom:8}}>
+            <G2 style={{marginBottom:8}}>
               <TI label="Tempo" value={editExF.tempo||''} onChange={v=>setEditExF(p=>({...p,tempo:v}))} placeholder="3010"/>
               <TI label="Rest"  value={editExF.rest||''}  onChange={v=>setEditExF(p=>({...p,rest:v}))}  placeholder="90s"/>
-              <TI label="Video" value={editExF.videoUrl||''} onChange={v=>setEditExF(p=>({...p,videoUrl:v}))} placeholder="https://…"/>
-            </G3>
+            </G2>
             <div style={{marginBottom:8}}>
               <label style={lS}>Collect from athlete</label>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
@@ -2875,9 +2988,8 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
     return (
       <div style={{background:_exDone?`${C.green}0F`:C.ink,borderTop:`1px solid ${C.border}`,padding:'12px 14px',transition:'background .3s'}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:10}}>
-          <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}</span>
+          <span style={{flex:1,fontSize:14.5,fontWeight:600,color:C.white,lineHeight:1.3}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}{ex.sub_reason?` - ${ex.sub_reason}`:''}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by client{ex.pending_approval?' · pending review':''}</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</span>
           {_exDone&&<span style={{flexShrink:0,display:'flex',alignItems:'center'}} title="All sets logged"><Icon name="check" size={16} color={C.green}/></span>}
-          {ex.videoUrl&&<a href={ex.videoUrl} target="_blank" rel="noreferrer" style={{flexShrink:0,marginTop:1}}><Icon name="play" size={16} color={C.c3}/></a>}
           {ex.notes&&<button onClick={()=>setNoteOpenId(noteOpen?null:ex.id)} style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:noteOpen?`${C.amber}1A`:C.card,border:`1px solid ${noteOpen?C.amber:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:noteOpen?C.amber:C.muted,fontSize:11,fontWeight:600}}><Icon name="fileText" size={12} color={noteOpen?C.amber:C.muted}/>Note</button>}
           <button onClick={()=>{setAthleteNoteEx(athleteNoteEx===ex.id?null:ex.id);setAthleteNoteDraft('')}} title="Leave your coach a note" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:athleteNoteEx===ex.id?`${C.c1}22`:C.card,border:`1px solid ${athleteNoteEx===ex.id?C.c2:C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:athleteNoteEx===ex.id?C.c3:C.muted,fontSize:11,fontWeight:600}}><Icon name="message" size={12} color={athleteNoteEx===ex.id?C.c3:C.muted}/></button>
           {!ex.isWarmup&&<button onClick={()=>setHistoryEx(ex.name)} title="History — past weights" style={{flexShrink:0,display:'flex',alignItems:'center',gap:4,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'4px 9px',cursor:'pointer',color:C.muted,fontSize:11,fontWeight:600}}><Icon name="clock" size={12} color={C.muted}/></button>}
@@ -2993,6 +3105,11 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
               {sess.date_label&&<span style={{fontSize:13,color:C.muted}}>{sess.date_label}</span>}
             </Row>
             {sess.notes&&<p style={{fontSize:13,color:C.dim,fontStyle:'italic'}}>{sess.notes}</p>}
+            {(sess.duration_seconds||sess.session_rpe) ? (<div style={{marginTop:8,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+              {sess.duration_seconds ? <span style={{fontSize:11,color:C.muted,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px'}}>{Math.round(sess.duration_seconds/60)} min</span> : null}
+              {sess.session_rpe ? <span style={{fontSize:11,fontWeight:700,color:C.amber,background:`${C.amber}14`,border:`1px solid ${C.amber}40`,borderRadius:7,padding:'3px 9px'}}>Session RPE {fmtN(sess.session_rpe)}</span> : null}
+            </div>) : null}
+            {sess.client_notes && <div style={{marginTop:8,background:`${C.c1}14`,border:`1px solid ${C.c1}40`,borderRadius:9,padding:'8px 11px'}}><div style={{fontSize:10,fontWeight:700,color:C.c3,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:3}}>From client</div><div style={{fontSize:12.5,color:C.white,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{sess.client_notes}</div></div>}
             <div style={{marginTop:8}}>
               <Row style={{justifyContent:'space-between',marginBottom:4}}>
                 <span style={{fontSize:11,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em'}}>Session progress</span>
@@ -3060,14 +3177,21 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
           <input value={qaName} onChange={e=>setQaName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&qaName.trim())quickAdd(qaName,qaMode)}} placeholder="Add exercise…" style={{flex:1,minWidth:0,background:'transparent',border:'none',outline:'none',color:C.white,fontSize:14,fontFamily:'inherit'}}/>
           {qaName.trim()&&<button onClick={()=>quickAdd(qaName,qaMode)} style={{background:C.amber,color:C.bg,border:'none',borderRadius:7,fontSize:12,fontWeight:700,padding:'6px 12px',cursor:'pointer',flexShrink:0}}>Add</button>}
         </div>
-        {qaName&&filtLib.length>0&&(
-          <div style={{background:C.ink,borderRadius:8,border:`1px solid ${C.border}`,maxHeight:160,overflowY:'auto',marginTop:8}}>
-            {filtLib.slice(0,7).map(e=>(
+        {qaName.trim()&&(
+          <div style={{background:C.ink,borderRadius:8,border:`1px solid ${C.border}`,maxHeight:220,overflowY:'auto',marginTop:8}}>
+            {filtLib.slice(0,8).map(e=>(
               <div key={e.id} onClick={()=>quickAdd(e.name,qaMode)} style={{padding:'8px 12px',cursor:'pointer',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:8}}>
                 <span style={{flex:1,fontSize:13,color:C.white}}>{e.name}</span>
-                <Tag v={e.pattern} color={PC[e.pattern]||C.c2} small/>
+                {!e.isLib&&<span style={{fontSize:9,color:C.c3,background:`${C.c1}1A`,borderRadius:5,padding:'1px 6px',flexShrink:0,whiteSpace:'nowrap'}}>library</span>}
+                {e.pattern&&<Tag v={e.pattern} color={PC[e.pattern]||C.c2} small/>}
               </div>
             ))}
+            {!qaExact&&(
+              <div onClick={()=>quickAdd(qaName,qaMode)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:9,background:`${C.amber}12`}}>
+                <span style={{fontSize:17,color:C.amber,fontWeight:700,lineHeight:1}}>+</span>
+                <span style={{flex:1,fontSize:13,color:C.amber,fontWeight:600}}>Create new exercise: "{qaName.trim()}"</span>
+              </div>
+            )}
           </div>
         )}
         <div style={{display:'flex',border:`1px solid ${C.border}`,borderRadius:8,overflow:'hidden',marginTop:9}}>
@@ -3151,19 +3275,7 @@ function SessionDetail({ sessionId, programId, clientId, clients, programs, week
 }
 
 
-// ─── TEMPLATES (localStorage) ────────────────────────────────────────────────
-function useTemplates() {
-  const KEY = 'cgee_templates'
-  const [templates, setTemplates] = React.useState(()=>{
-    try{ return JSON.parse(localStorage.getItem(KEY)||'[]') } catch{ return [] }
-  })
-  const persist = ts => { localStorage.setItem(KEY, JSON.stringify(ts)); setTemplates(ts) }
-  const addTemplate    = t  => persist([...templates, {...t, id:uid(), created_at:new Date().toISOString()}])
-  const deleteTemplate = id => persist(templates.filter(t=>t.id!==id))
-  const updateTemplate = (id,d) => persist(templates.map(t=>t.id===id?{...t,...d}:t))
-  return { templates, addTemplate, deleteTemplate, updateTemplate }
-}
-
+// ─── TEMPLATES (Supabase: templates table via addTemplate/updateTemplate/deleteTemplate) ──
 const TEMPLATE_TYPES = [
   {id:'program',   label:'Program Templates', icon:'▦', desc:'Full program structures with weeks, sessions, and exercise prescriptions'},
   {id:'session',   label:'Session Templates',  icon:'◈', desc:'Reusable session layouts with exercise blocks and set/rep schemes'},
@@ -3926,6 +4038,11 @@ function getClientPBs(clientId, sessions, allSessions, weeks, programs) {
 
 function generateAutoFlags(client, sessions, allSessions, programs, weeks) {
   const flags = [], cs = sessions.filter(s=>s.client_id===client.id)
+  ;(()=>{ const wl=getWellnessFor(client.id,3); const lat=wl[0]; if(lat){ const sc=wellnessScore(lat); if(lat.pain_flag) flags.push({id:`af_pain_${client.id}`,flag_type:'injury',title:'Pain flagged in latest check-in',body:lat.notes||'Athlete flagged pain or injury in their daily readiness check-in.',is_auto:true,is_resolved:false}); if(sc!=null && sc<40) flags.push({id:`af_ready_${client.id}`,flag_type:'warning',title:`Low readiness (${sc}/100)`,body:`Latest check-in ${lat.log_date} — sleep, energy or soreness trending low.`,is_auto:true,is_resolved:false}) } })()
+  ;(()=>{ const ne=Array.isArray(client.no_equipment)?client.no_equipment:[]; if(!ne.length) return; const clash=[...new Set(cs.flatMap(x=>safeExercises(x)).filter(e=>!e.isWarmup).map(e=>e.name).filter(nm=>exerciseMissingEquip(nm,ne).length>0))]; if(clash.length) flags.push({id:`af_equip_${client.id}`,flag_type:'warning',title:`${clash.length} exercise${clash.length>1?'s':''} may need unavailable equipment`,body:clash.slice(0,6).join(', '),is_auto:true,is_resolved:false}) })()
+  ;(()=>{ const cutoff=Date.now()-12*864e5; getSubsForClient(client.id).filter(su=>new Date(su.created_at||0).getTime()>=cutoff).slice(0,6).forEach(su=>{ flags.push({id:`af_sub_${su.id||su.created_at}`,flag_type:'focus',title:`Swapped ${su.original_name} for ${su.substitute_name}`,body:`${su.reason||'No reason given'} (${su.scope==='program'?'rest of program':'this session'})`,is_auto:true,is_resolved:false}) }) })()
+  ;(()=>{ const added=[...new Set(cs.flatMap(z=>safeExercises(z)).filter(e=>e.client_added).map(e=>e.name))]; if(added.length) flags.push({id:`af_added_${client.id}`,flag_type:'focus',title:`${added.length} exercise${added.length>1?'s':''} added by client`,body:added.slice(0,6).join(', '),is_auto:true,is_resolved:false}) })()
+  ;(()=>{ const sk=[...new Set(cs.flatMap(z=>safeExercises(z)).filter(e=>e.skipped).map(e=>e.name))]; if(sk.length) flags.push({id:`af_skip_${client.id}`,flag_type:'focus',title:`${sk.length} exercise${sk.length>1?'s':''} skipped on purpose`,body:sk.slice(0,6).join(', '),is_auto:true,is_resolved:false}) })()
   if(cs.length<3) return flags
   const recent8 = cs.slice(-8)
   const notDone = recent8.filter(s=>computeSessionStatus(s)==='not_started').length
@@ -5432,6 +5549,17 @@ function LibraryView({ sessions = [], av=0 }) {
   const [fl,      setFl]      = useState('')   // limb
   const [fm,      setFm]      = useState('')   // muscle
   const [expand,  setExpand]  = useState(null)
+  const [editTags, setEditTags] = useState(null)
+  const [tf, setTf] = useState({})
+  const [metaTick, setMetaTick] = useState(0)
+  const [mergeFor, setMergeFor] = useState(null)
+  const [mergeQ, setMergeQ] = useState('')
+  const lblS={fontSize:10,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:4}
+  const inpS={width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'9px 11px',color:C.white,fontSize:13,fontFamily:'inherit'}
+  const dlblS={fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}
+  const dvalS={fontSize:12,color:C.white}
+  const openEditTags = (ex) => { const m=getExMeta(ex.name)||{}; setTf({ pattern:m.pattern||'', muscles:m.muscles||(ex.isCustom?'':(ex.muscles||''))||'', equipment:m.equipment||(ex.equip&&ex.equip!=='Custom'?ex.equip:'')||'', demo:m.youtube_url||'', cues:m.description||'' }); setEditTags(ex.id) }
+  const saveTags = (ex) => { saveExMeta(ex.name, { pattern:(tf.pattern||'').toLowerCase(), muscles:tf.muscles||'', equipment:tf.equipment||'', youtube_url:tf.demo||'', description:tf.cues||'' }); setMetaTick(t=>t+1); setEditTags(null) }
 
   // Build combined exercise list: DEFAULT_LIB + all unique exercises from sessions
   const allExercises = React.useMemo(() => {
@@ -5456,18 +5584,34 @@ function LibraryView({ sessions = [], av=0 }) {
           useCount,
         }
       })
+    const overlay = (e) => {
+      const m = getExMeta(e.name) || {}
+      const pat = m.pattern ? (m.pattern.charAt(0).toUpperCase()+m.pattern.slice(1)) : e.pattern
+      return { ...e,
+        pattern: pat,
+        muscles: m.muscles || e.muscles,
+        equip:   m.equipment || e.equip,
+        _demo:   m.youtube_url || '',
+        _cues:   m.description || '',
+        _curated: !!(m.pattern||m.muscles||m.equipment||m.youtube_url||m.description),
+      }
+    }
     return [
       ...DEFAULT_LIB.map(e => ({
         ...e, isCustom: false,
         useCount: sessions.filter(s => safeExercises(s).some(ex => ex.name.toLowerCase() === e.name.toLowerCase())).length,
       })),
       ...sessionOnly,
-    ].sort((a,b) => {
+    ].map(overlay).sort((a,b) => {
       // Custom (session) exercises sorted by usage, library exercises alphabetically
       if(a.isCustom !== b.isCustom) return a.isCustom ? 1 : -1
       return a.name.localeCompare(b.name)
     })
-  }, [sessions, av])
+  }, [sessions, av, metaTick])
+
+  React.useEffect(()=>{ const h=()=>setMetaTick(t=>t+1); window.addEventListener('cgee-reg-changed',h); return ()=>window.removeEventListener('cgee-reg-changed',h) },[])
+  const approveNew = (a) => { resolveApproval(a.name,'approve'); const target=allExercises.find(e=>e.name.toLowerCase()===a.name.toLowerCase()); if(target){ setExpand(target.id); openEditTags(target) } }
+  const pending = getPendingApprovals()
 
   // Unique filter options derived from data
   const patterns  = [...new Set(allExercises.map(e => e.pattern).filter(Boolean))].sort()
@@ -5551,6 +5695,49 @@ function LibraryView({ sessions = [], av=0 }) {
         )}
       </Card>
 
+      {pending.length>0 && (
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:11,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8}}>Pending review · {pending.length}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {pending.map(a=>{
+              const merging = mergeFor===a.id
+              const opts = merging ? allExercises.filter(e=>e.name.toLowerCase()!==a.name.toLowerCase() && (!mergeQ||e.name.toLowerCase().includes(mergeQ.toLowerCase()))).slice(0,8) : []
+              return (
+                <div key={a.id} style={{background:C.card,border:`1px solid ${C.amber}40`,borderRadius:10,padding:'12px 14px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,marginBottom:10}}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:700,color:C.white}}>{a.name}</div>
+                      <div style={{fontSize:11,color:C.muted,marginTop:2}}>Added by {a.client_name||'a client'}{a.created_at?` · ${new Date(a.created_at).toLocaleDateString()}`:''}</div>
+                    </div>
+                    <span style={{fontSize:9,color:C.amber,background:`${C.amber}1A`,borderRadius:5,padding:'2px 7px',fontWeight:700,whiteSpace:'nowrap'}}>NEW</span>
+                  </div>
+                  {!merging ? (
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      <button onClick={()=>approveNew(a)} style={{flex:1,minWidth:130,background:C.amber,color:C.bg,border:'none',borderRadius:8,padding:'9px',fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Approve as new</button>
+                      <button onClick={()=>{setMergeFor(a.id);setMergeQ('')}} style={{flex:1,minWidth:130,background:'transparent',color:C.c3,border:`1px solid ${C.border}`,borderRadius:8,padding:'9px',fontWeight:700,fontSize:12.5,cursor:'pointer'}}>Merge into…</button>
+                      <button onClick={()=>resolveApproval(a.name,'dismiss')} style={{background:'transparent',color:C.faint,border:'none',padding:'9px 6px',fontSize:11.5,cursor:'pointer'}}>Dismiss</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <input value={mergeQ} onChange={e=>setMergeQ(e.target.value)} autoFocus placeholder="Search existing exercise…" style={{...inpS,marginBottom:8}}/>
+                      <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:180,overflowY:'auto'}}>
+                        {opts.map(o=>(
+                          <button key={o.id} onClick={()=>{ resolveApproval(a.name,'merge',o.name); setMergeFor(null) }} style={{textAlign:'left',background:C.ink,border:`1px solid ${C.border}`,borderRadius:7,padding:'8px 11px',color:C.white,fontSize:12.5,cursor:'pointer',display:'flex',alignItems:'center',gap:8}}>
+                            <span style={{flex:1}}>{o.name}</span>{o.pattern&&<span style={{fontSize:10,color:C.dim}}>{o.pattern}</span>}
+                          </button>
+                        ))}
+                        {opts.length===0&&<span style={{fontSize:11.5,color:C.faint,fontStyle:'italic',padding:'4px 2px'}}>No matches.</span>}
+                      </div>
+                      <button onClick={()=>setMergeFor(null)} style={{marginTop:8,background:'transparent',color:C.muted,border:'none',fontSize:11.5,cursor:'pointer',fontWeight:600}}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Results */}
       <div style={{display:'flex',flexDirection:'column',gap:4}}>
         {filtered.map(ex=>{
@@ -5579,13 +5766,41 @@ function LibraryView({ sessions = [], av=0 }) {
 
               {/* Expanded detail */}
               {isExpanded&&(
-                <div style={{background:C.ink,borderTop:`1px solid ${C.border}`,padding:'10px 14px',display:'flex',flexWrap:'wrap',gap:16}}>
-                  {ex.muscles&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Muscles</div><div style={{fontSize:12,color:C.white}}>{ex.muscles}</div></div>}
-                  {ex.equip&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Equipment</div><div style={{fontSize:12,color:C.white}}>{ex.equip}</div></div>}
-                  {ex.pattern&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Pattern</div><div style={{fontSize:12,color:C.white}}>{ex.pattern}</div></div>}
-                  {ex.quality&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Quality</div><div style={{fontSize:12,color:C.white}}>{ex.quality}</div></div>}
-                  {ex.limb&&<div><div style={{fontSize:9,color:C.amber,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}}>Limb</div><div style={{fontSize:12,color:C.white}}>{ex.limb}</div></div>}
-                  {ex.isCustom&&<div style={{fontSize:11,color:C.faint,fontStyle:'italic',alignSelf:'center'}}>Detected from your session data</div>}
+                <div style={{background:C.ink,borderTop:`1px solid ${C.border}`,padding:'12px 14px'}}>
+                  {editTags===ex.id ? (
+                    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                      <div>
+                        <div style={lblS}>Movement pattern</div>
+                        <select value={tf.pattern} onChange={e=>setTf({...tf,pattern:e.target.value})} style={inpS}>
+                          <option value="">— auto-detect from name —</option>
+                          {PATTERNS.map(pn=><option key={pn} value={pn}>{pn}</option>)}
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                      <div><div style={lblS}>Muscles</div><input value={tf.muscles} onChange={e=>setTf({...tf,muscles:e.target.value})} placeholder="e.g. Quads, glutes" style={inpS}/></div>
+                      <div><div style={lblS}>Equipment</div><input value={tf.equipment} onChange={e=>setTf({...tf,equipment:e.target.value})} placeholder="e.g. Dumbbell" style={inpS}/></div>
+                      <div><div style={lblS}>Demo video (YouTube URL)</div><input value={tf.demo} onChange={e=>setTf({...tf,demo:e.target.value})} placeholder="https://youtube.com/..." style={inpS}/></div>
+                      <div><div style={lblS}>Coaching cues</div><textarea value={tf.cues} onChange={e=>setTf({...tf,cues:e.target.value})} rows={3} placeholder="Key cues for this exercise" style={{...inpS,resize:'vertical'}}/></div>
+                      <div style={{display:'flex',gap:8,marginTop:2}}>
+                        <button onClick={()=>saveTags(ex)} style={{flex:1,background:C.amber,color:C.bg,border:'none',borderRadius:8,padding:'10px',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Save details</button>
+                        <button onClick={()=>setEditTags(null)} style={{background:'transparent',color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:'10px 16px',fontWeight:600,fontSize:13,cursor:'pointer'}}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{display:'flex',flexWrap:'wrap',gap:16,alignItems:'flex-start'}}>
+                      {ex.muscles&&<div><div style={dlblS}>Muscles</div><div style={dvalS}>{ex.muscles}</div></div>}
+                      {ex.equip&&ex.equip!=='Custom'&&<div><div style={dlblS}>Equipment</div><div style={dvalS}>{ex.equip}</div></div>}
+                      {ex.pattern&&<div><div style={dlblS}>Pattern</div><div style={dvalS}>{ex.pattern}</div></div>}
+                      {ex.quality&&<div><div style={dlblS}>Quality</div><div style={dvalS}>{ex.quality}</div></div>}
+                      {ex.limb&&<div><div style={dlblS}>Limb</div><div style={dvalS}>{ex.limb}</div></div>}
+                      {ex._cues&&<div style={{flexBasis:'100%'}}><div style={dlblS}>Cues</div><div style={dvalS}>{ex._cues}</div></div>}
+                      {ex._demo&&<div style={{flexBasis:'100%'}}><a href={ex._demo} target="_blank" rel="noreferrer" style={{fontSize:12,color:C.c3,fontWeight:600,textDecoration:'none'}}>▶ Demo video</a></div>}
+                      <div style={{flexBasis:'100%',display:'flex',alignItems:'center',gap:12,marginTop:2}}>
+                        <button onClick={()=>openEditTags(ex)} style={{background:`${C.amber}14`,color:C.amber,border:`1px solid ${C.amber}55`,borderRadius:7,padding:'6px 12px',fontSize:11.5,fontWeight:700,cursor:'pointer'}}>Edit details</button>
+                        {ex.isCustom&&!ex._curated&&<span style={{fontSize:11,color:C.faint,fontStyle:'italic'}}>Auto-detected — add tags to refine</span>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -6005,7 +6220,7 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving, weeks=
       const exs=safeExercises(sess).filter(e=>!e.isWarmup)
       if(!exs.length) return null
       let tp=0,td=0
-      exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=ex.force_complete?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); tp+=p; td+=d })
+      exs.forEach(ex=>{ const p=parseInt(ex.sets)||1; const d=(ex.skipped||ex.force_complete)?p:Math.min(p,(ex.loggedSets||[]).filter(setIsDone).length); tp+=p; td+=d })
       return td===0?'not_started':(td>=tp?'complete':'in_progress')
     }
     const out=[]
@@ -6493,8 +6708,6 @@ function ExerciseCleanup({ sessions, updateSession, mergeSession, saving, weeks=
 // SESSION MESSAGES + EXERCISE SUBSTITUTION SYSTEMS
 // ═══════════════════════════════════════════════════════════════════════════════
 const MSG_KEY  = 'cgee_messages'
-const SUB_KEY  = 'cgee_substitutions'
-const PREF_KEY = 'cgee_ex_prefs'
 
 const SUB_REASONS = [
   'Pain / discomfort','No equipment','Too difficult','Too easy',
@@ -6509,13 +6722,25 @@ const SUB_SCOPES = [
 ]
 
 function getSubSuggestions(exerciseName, allSessions) {
-  const pat = detectPattern(exerciseName)
-  const fromLib = DEFAULT_LIB.filter(e=>e.name!==exerciseName&&detectPattern(e.name)===pat)
+  const pat = patternByName(exerciseName)
+  const fromLib = DEFAULT_LIB.filter(e=>e.name!==exerciseName&&patternByName(e.name)===pat)
   const fromSess = [...new Set(
     allSessions.flatMap(s=>safeExercises(s).filter(e=>!e.isWarmup&&e.name!==exerciseName).map(e=>e.name))
-  )].filter(n=>detectPattern(n)===pat&&!fromLib.some(e=>e.name===n))
-    .map(n=>({name:n,pattern:detectPattern(n),muscles:'',equip:'',isLib:false}))
+  )].filter(n=>patternByName(n)===pat&&!fromLib.some(e=>e.name===n))
+    .map(n=>({name:n,pattern:patternByName(n),muscles:(getExMeta(n)||{}).muscles||'',equip:(getExMeta(n)||{}).equipment||'',isLib:false}))
   return [...fromLib.map(e=>({...e,isLib:true})),...fromSess].slice(0,14)
+}
+
+// Resolve a pattern by name, preferring a coach-set tag (exercise_meta) over name-derived
+function patternByName(name){ const meta=getExMeta(name); const mp=meta&&meta.pattern?String(meta.pattern).trim().toLowerCase():''; if(mp) return mp; return detectPattern(name) }
+// Resolve an exercise's movement pattern: coach tag > stored pattern > name-derived
+function exPatternOf(e){ const meta=getExMeta(e&&e.name); const mp=meta&&meta.pattern?String(meta.pattern).trim().toLowerCase():''; if(mp) return mp; const p=(e&&e.pattern?String(e.pattern):'').trim().toLowerCase(); if(p) return p; return detectPattern(e&&e.name) }
+// Full searchable exercise library: defaults + every exercise used across sessions
+function getFullExLib(allSessions){
+  const seen=new Map()
+  DEFAULT_LIB.forEach(e=>{ const k=e.name.toLowerCase(); if(!seen.has(k)) seen.set(k,{name:e.name,pattern:(e.pattern||detectPattern(e.name)),muscles:e.muscles||'',equip:e.equip||'',isLib:true}) })
+  ;(allSessions||[]).forEach(s=> safeExercises(s).forEach(e=>{ if(e.isWarmup) return; const nm=(resolveExName(e.name)||e.name||'').trim(); if(!nm) return; const k=nm.toLowerCase(); if(!seen.has(k)) seen.set(k,{name:nm,pattern:exPatternOf(e),muscles:'',equip:'',isLib:false}) }) )
+  return [...seen.values()].sort((a,b)=>a.name.localeCompare(b.name))
 }
 
 function SubstitutionModal({ ex, sessionId, clientId, programId, weekId, allSessions, onSave, onClose }) {
@@ -6524,7 +6749,9 @@ function SubstitutionModal({ ex, sessionId, clientId, programId, weekId, allSess
   const [reason,  setReason]  = useState('')
   const [scope,   setScope]   = useState('session')
   const suggestions = React.useMemo(()=>getSubSuggestions(ex.name, allSessions),[ex.name, allSessions.length])
-  const filtered = suggestions.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())||(s.muscles||'').toLowerCase().includes(search.toLowerCase()))
+  const fullLib = React.useMemo(()=>getFullExLib(allSessions),[(allSessions||[]).length])
+  const sq = search.trim().toLowerCase()
+  const filtered = (sq ? fullLib.filter(s=>s.name.toLowerCase()!==ex.name.toLowerCase()&&(s.name.toLowerCase().includes(sq)||(s.muscles||'').toLowerCase().includes(sq))) : suggestions).slice(0,30)
   const canSave = (chosen.trim()&&reason)
   const save = () => {
     if(!canSave) return
@@ -6546,7 +6773,7 @@ function SubstitutionModal({ ex, sessionId, clientId, programId, weekId, allSess
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search alternatives…" style={{...iS,paddingLeft:32}}/>
             <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:C.faint,fontSize:14,pointerEvents:'none'}}>⌕</span>
           </div>
-          <label style={{...lS,marginBottom:6,display:'block'}}>Similar exercises ({detectPattern(ex.name)})</label>
+          <label style={{...lS,marginBottom:6,display:'block'}}>{search.trim()?'Library matches':('Similar exercises ('+detectPattern(ex.name)+')')}</label>
           <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:14}}>
             {filtered.length===0&&<p style={{color:C.faint,fontSize:12,margin:0}}>No library matches — type any name below.</p>}
             {filtered.map(s=>(
@@ -6951,7 +7178,97 @@ function getSessionPBs(sessId, pbs){
   })
   return out
 }
-function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId, clientName='' }){
+const SKIP_REASONS = ['Pain / discomfort','Ran out of time','Too fatigued','Equipment busy','Felt unnecessary','Other']
+function SkipReasonSheet({ title, onPick, onClose }){
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9600,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <h2 style={{fontSize:17,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>{title||'Why skip?'}</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Cancel</button>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {SKIP_REASONS.map(r=>(<button key={r} onClick={()=>onPick(r)} style={{textAlign:'left',background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'13px 14px',color:C.white,fontSize:13.5,fontWeight:600,cursor:'pointer'}}>{r}</button>))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function computeSessionTotals(sess){
+  const exs=safeExercises(sess).filter(e=>!e.isWarmup)
+  let totalReps=0, totalVol=0, setsDone=0
+  exs.forEach(ex=>{ if(ex.skipped) return; (ex.loggedSets||[]).forEach(ls=>{ if(ls.skipped) return; const reps=parseFloat(ls.completedReps); const load=parseFloat(ls.completedLoad); if(!isNaN(reps)&&reps>0){ totalReps+=reps; setsDone++; if(!isNaN(load)&&load>0) totalVol+=reps*load } else if(setIsDone(ls)) setsDone++ }) })
+  return { totalReps:Math.round(totalReps), totalVol:Math.round(totalVol), setsDone, exCount:exs.length }
+}
+function buildSessionEval({ goal, stats, rpe, pbCount }){
+  const g=(goal||'').toLowerCase(); const parts=[]
+  if(pbCount>0) parts.push(`${pbCount} new personal best${pbCount>1?'s':''} today — that is real progress on the board.`)
+  if(/strength|strong|power|1rm/.test(g)) parts.push(`Heavy, quality sets like these are exactly what build maximal strength. Chase small load jumps next time.`)
+  else if(/muscle|hypertrophy|size|lean|tone|build/.test(g)) parts.push(`${stats.totalVol.toLocaleString()} kg of total work moved — accumulating volume like this is what grows muscle over the weeks.`)
+  else if(/fat|weight|condition|fitness/.test(g)) parts.push(`Showing up and finishing the work is the whole game for body composition — a strong, consistent session.`)
+  else if(/return|rehab|injury|pain/.test(g)) parts.push(`Smart, controlled work that keeps you moving forward without flare-ups — exactly the right approach.`)
+  else parts.push(`Strong, consistent work that moves you closer to your goal.`)
+  if(rpe>=9) parts.push(`That was an all-out effort — prioritise sleep and food before the next one.`)
+  else if(rpe>=7) parts.push(`Solid effort today. Recover well and go again.`)
+  else if(rpe>0&&rpe<=4) parts.push(`Felt comfortable — there may be room to push the load a little next time.`)
+  return parts.join(' ')
+}
+function SessionDoneSummary({ sess, profile, stats, rpe, pbHits, onClose }){
+  const name=(((profile&&profile.name)||'').split(' ')[0])||''
+  const pbCount=Array.isArray(pbHits)?pbHits.length:(pbHits||0)
+  const evalMsg=buildSessionEval({ goal:(profile&&profile.goal)||'', stats, rpe, pbCount })
+  const St=({v,l})=>(<div style={{flex:1,textAlign:'center'}}><div style={{fontSize:26,fontWeight:700,color:C.amber,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{v}</div><div style={{fontSize:10,color:C.faint,textTransform:'uppercase',letterSpacing:'0.06em',marginTop:5}}>{l}</div></div>)
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9700,background:'rgba(4,7,15,0.94)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',overflowY:'auto',padding:'24px 18px 26px'}}>
+        <div style={{textAlign:'center',marginBottom:20}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.green,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>Session complete</div>
+          <h2 style={{fontSize:24,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>Nice work{name?', '+name:''}!</h2>
+        </div>
+        <div style={{display:'flex',gap:8,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'18px 10px',marginBottom:16}}>
+          <St v={stats.totalVol.toLocaleString()} l="kg lifted"/>
+          <St v={stats.totalReps} l="total reps"/>
+          <St v={stats.setsDone} l="sets done"/>
+        </div>
+        {pbCount>0 && <div style={{textAlign:'center',background:`${C.gold}14`,border:`1px solid ${C.gold}50`,borderRadius:12,padding:'12px',marginBottom:16}}><span style={{fontSize:13.5,fontWeight:700,color:C.gold,fontFamily:'Space Grotesk,sans-serif'}}>{pbCount} new personal best{pbCount>1?'s':''}!</span></div>}
+        <p style={{fontSize:13.5,color:C.muted,lineHeight:1.6,margin:'0 0 20px',textAlign:'center'}}>{evalMsg}</p>
+        <button onClick={onClose} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Done</button>
+      </div>
+    </div>
+  )
+}
+function FinishFlow({ sess, profile, pbHits, updateSession, onClose }){
+  const [step,setStep]=useState(0)
+  const [chMin,setChMin]=useState(0)
+  const [chRpe,setChRpe]=useState(0)
+  const [chNote,setChNote]=useState('')
+  const submit=()=>{ const dur=Math.max(0,Math.round(chMin*60)); const ns=computeSessionStatus(sess); const patch={duration_seconds:dur}; if(chRpe) patch.session_rpe=chRpe; if(chNote&&chNote.trim()) patch.client_notes=chNote.trim(); if(ns!=='complete'){ patch.status='manual_complete'; patch.completed_at=new Date().toISOString() } if(updateSession) updateSession(sess.id,patch); setStep(1) }
+  if(step===1) return <SessionDoneSummary sess={sess} profile={profile} stats={computeSessionTotals(sess)} rpe={chRpe} pbHits={pbHits} onClose={onClose}/>
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9700,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+          <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>Finish session</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Close</button>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:16}}>
+          <span style={{fontSize:13,color:C.muted}}>Time taken</span>
+          <button onClick={()=>setChMin(m=>Math.max(0,m-5))} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>-</button>
+          <input type="number" value={chMin} onChange={e=>setChMin(Math.max(0,parseInt(e.target.value)||0))} style={{width:52,textAlign:'center',background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'8px 4px',color:C.white,fontSize:15,fontWeight:700,fontFamily:'Space Grotesk,sans-serif'}}/>
+          <span style={{fontSize:13,color:C.muted}}>min</span>
+          <button onClick={()=>setChMin(m=>m+5)} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>+</button>
+        </div>
+        <div style={{fontSize:13,color:C.muted,marginBottom:14}}>How hard was the whole session?</div>
+        <div style={{display:'flex',gap:5,marginBottom:16}}>{[1,2,3,4,5,6,7,8,9,10].map(n=>(<button key={n} onClick={()=>setChRpe(n)} style={{flex:1,padding:'11px 0',borderRadius:8,border:`1px solid ${chRpe===n?C.amber:C.border}`,background:chRpe===n?C.amber:'transparent',color:chRpe===n?C.bg:C.muted,fontWeight:700,fontSize:13,cursor:'pointer'}}>{n}</button>))}</div>
+        <textarea value={chNote} onChange={e=>setChNote(e.target.value)} placeholder="Anything to tell your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:60,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
+        <button onClick={submit} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>See summary</button>
+      </div>
+    </div>
+  )
+}
+
+function GuidedSession({ sess, programName, updateSession, onExit, onClassic, onFinish, initialRest=false, sessions=[], weeks=[], programs=[], clientId, clientName='', onSubstitute, profile, pbHits }){
   const [demoUrl,setDemoUrl]=useState(null)
   const [reqDone,setReqDone]=useState({})
   const exs = safeExercises(sess)
@@ -7010,6 +7327,9 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
 
   const [restOn,setRestOn] = useState(!!initialRest)
   const [histEx,setHistEx] = useState(null)
+  const [subEx,setSubEx]=useState(null)
+  const [skipPend,setSkipPend]=useState(null)
+  const [summaryShown,setSummaryShown]=useState(false)
   const [resting,setResting] = useState(false)
   const [restSec,setRestSec] = useState(0)
   const [restTarget,setRestTarget] = useState(0)
@@ -7028,7 +7348,24 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
   const totalSteps = steps.length
   const doneSteps = steps.filter(isStepDone).length
 
-  const advance = (restFrom)=>{ if(c<steps.length-1){ setCursor(c+1); if(restOn){ setRestUp(!restFrom); setRestTarget(parseT(restFrom)); setRestSec(0); setResting(true) } } else { onFinish&&onFinish() } }
+  const startRef = React.useRef(Date.now())
+  const [checkIn,setCheckIn]=useState(false)
+  const [chRpe,setChRpe]=useState(0)
+  const [chNote,setChNote]=useState('')
+  const [chMin,setChMin]=useState(0)
+  const openCheckIn = ()=>{ setChMin(Math.round((Date.now()-startRef.current)/60000)); setCheckIn(true) }
+  const doFinish = ()=>{
+    const dur = Math.max(0, Math.round(chMin*60))
+    const ns = computeSessionStatus(sess)
+    const patch = { duration_seconds: dur }
+    if(chRpe) patch.session_rpe = chRpe
+    if(chNote && chNote.trim()) patch.client_notes = chNote.trim()
+    if(ns!=='complete'){ patch.status='manual_complete'; patch.completed_at=new Date().toISOString() }
+    updateSession(sess.id, patch)
+    setCheckIn(false)
+    setSummaryShown(true)
+  }
+  const advance = (restFrom)=>{ if(c<steps.length-1){ setCursor(c+1); if(restOn){ setRestUp(!restFrom); setRestTarget(parseT(restFrom)); setRestSec(0); setResting(true) } } else { openCheckIn() } }
   const writeSet = (extra)=>{
     const ls=[...(ex.loggedSets||[])]; const idx=ls.findIndex(x=>x.setNumber===setNum)
     const base = idx>=0?ls[idx]:{id:uid(),setNumber:setNum}
@@ -7036,6 +7373,8 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
     if(idx>=0) ls[idx]=entry; else ls.push(entry)
     saveExs(exs.map((x,i)=> i===step.exIndex?{...x,loggedSets:ls}:x))
   }
+  const skipSetGuided = (reason)=>{ writeSet({skipped:true, skip_reason:reason}); if(c<steps.length-1){ setCursor(c+1); setResting(false) } else { openCheckIn() } }
+  const skipExerciseGuided = (reason)=>{ saveExs(exs.map((x,i)=> i===step.exIndex?{...x,skipped:true,skip_reason:reason,skipped_at:new Date().toISOString()}:x)); const nextI=steps.findIndex((st,i)=>i>c && st.exIndex!==step.exIndex); if(nextI>=0){ setCursor(nextI); setResting(false) } else { openCheckIn() } }
   const logSet = ()=>{
     const e={confirmed:true}
     if(!isWarm && !isTime) e.completedReps = (draft.reps!==''?fmtN(draft.reps):fmtN(prescReps))
@@ -7050,7 +7389,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
     writeSet(e); advance(ex.rest)
   }
   const jumpToEx = (exIndex)=>{ setResting(false); for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex && !isStepDone(steps[k])){ setCursor(k); return } } for(let k=0;k<steps.length;k++){ if(steps[k].exIndex===exIndex){ setCursor(k); return } } }
-  const finish = ()=>{ const ns=computeSessionStatus(sess); if(ns!=='complete') updateSession(sess.id,{status:'manual_complete',completed_at:new Date().toISOString()}); onFinish&&onFinish() }
+  const finish = ()=>{ openCheckIn() }
 
   const tx = React.useRef(null)
   const onTouchStart = e => { tx.current = e.touches[0].clientX }
@@ -7118,7 +7457,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
               <span style={{fontSize:11,color:C.c3,fontWeight:700,letterSpacing:'0.05em'}}>{step.superset?'SUPERSET · ':''}SET {setNum} OF {step.nSets}</span>
               {!isWarm&&<button onClick={()=>setHistEx(ex.name)} title="History — past weights" style={{marginLeft:'auto',background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px',color:C.muted,fontSize:11,fontWeight:600,cursor:'pointer'}}>History</button>}
             </div>
-            <div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:21,color:C.white,marginBottom:6}}>{ex.name}</div>
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10,marginBottom:6}}><div style={{fontFamily:'Space Grotesk,sans-serif',fontWeight:700,fontSize:21,color:C.white}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10.5,fontFamily:'Inter,sans-serif',fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by you</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>Skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</div>{!isWarm && <div style={{display:'flex',gap:6,flexShrink:0}}>{onSubstitute && <button onClick={()=>setSubEx(ex)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:8,padding:'6px 10px',color:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>Swap</button>}<button onClick={()=> ex.skipped ? saveExs(exs.map((x,i)=>i===step.exIndex?{...x,skipped:false,skip_reason:undefined}:x)) : setSkipPend({kind:'ex'})} style={{background:ex.skipped?`${C.orange}1A`:'transparent',border:`1px solid ${ex.skipped?C.orange:C.border}`,borderRadius:8,padding:'6px 10px',color:ex.skipped?C.orange:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>{ex.skipped?'Un-skip':'Skip'}</button></div>}</div>
             <div style={{fontSize:13,color:C.white,fontWeight:600}}>Target: <span style={{color:'rgba(255,255,255,0.92)'}}>{prescLine||'—'}</span></div>
             {ex.rest&&<div style={{fontSize:11,color:C.faint,marginTop:3}}>Rest {ex.rest}</div>}
             {ex.notes&&<div style={{fontStyle:'italic',fontSize:12,color:C.muted,borderLeft:`2px solid ${C.amber}66`,paddingLeft:8,marginTop:10}}>{ex.notes}</div>}
@@ -7140,7 +7479,7 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
                   <button onClick={()=>{ setEffSec(0); setEffOn(o=>!o) }} style={{border:`1px solid ${C.amber}55`,background:`${C.amber}15`,color:C.amber,fontWeight:700,fontSize:13,borderRadius:9,padding:'8px 16px',cursor:'pointer'}}>{effOn?'Stop':'Start'}</button>
                 </div>
               )}
-              <button onClick={markDone} style={{width:'100%',background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Done \u2713':'Mark done'}{restOn?' & rest':''}</button>
+              <button onClick={markDone} style={{width:'100%',background:C.amber,color:C.bg,border:'none',fontWeight:700,fontSize:15,padding:13,borderRadius:11,fontFamily:'Space Grotesk,sans-serif',cursor:'pointer'}}>{isStepDone(step)?'Done \u2713':'Mark done'}{restOn?' & rest':''}</button>{!isWarm && <button onClick={()=>setSkipPend({kind:'set'})} style={{width:'100%',marginTop:8,background:'transparent',border:'none',color:C.muted,fontSize:12,fontWeight:600,cursor:'pointer'}}>Skip this set</button>}
             </div>
           ) : (<>
             {isTime && (
@@ -7183,18 +7522,48 @@ function GuidedSession({ sess, programName, updateSession, onExit, onClassic, on
         <span style={{color:C.faint,fontSize:11}}>·</span>
         <button onClick={()=>{setRestOn(o=>!o);setResting(false)}} style={{background:'none',border:'none',color:restOn?C.amber:C.muted,fontSize:12,cursor:'pointer',padding:0}}>Rest timer: {restOn?'on':'off'}</button>
       </div>
+      {checkIn && (
+        <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+          <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+            <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',marginBottom:4}}>Nice work!</h2>
+            <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:16}}>
+              <span style={{fontSize:13,color:C.muted}}>Time taken</span>
+              <button onClick={()=>setChMin(m=>Math.max(0,m-5))} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>-</button>
+              <input type="number" value={chMin} onChange={e=>setChMin(Math.max(0,parseInt(e.target.value)||0))} style={{width:52,textAlign:'center',background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:'8px 4px',color:C.white,fontSize:15,fontWeight:700,fontFamily:'Space Grotesk,sans-serif'}}/>
+              <span style={{fontSize:13,color:C.muted}}>min</span>
+              <button onClick={()=>setChMin(m=>m+5)} style={{width:34,height:34,borderRadius:8,border:`1px solid ${C.border}`,background:C.card,color:C.white,fontSize:18,fontWeight:700,cursor:'pointer',lineHeight:1}}>+</button>
+            </div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:14}}>How hard was the whole session?</div>
+            <div style={{display:'flex',gap:5,marginBottom:6}}>{[1,2,3,4,5,6,7,8,9,10].map(n=>(<button key={n} onClick={()=>setChRpe(n)} style={{flex:1,padding:'11px 0',borderRadius:8,border:`1px solid ${chRpe===n?C.amber:C.border}`,background:chRpe===n?C.amber:'transparent',color:chRpe===n?C.bg:C.muted,fontWeight:700,fontSize:13,cursor:'pointer'}}>{n}</button>))}</div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:C.faint,marginBottom:16}}><span>Easy</span><span>Max effort</span></div>
+            <textarea value={chNote} onChange={e=>setChNote(e.target.value)} placeholder="Anything to tell your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:62,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={doFinish} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:11,padding:'13px 18px',color:C.muted,fontWeight:600,fontSize:13.5,cursor:'pointer'}}>Skip</button>
+              <button onClick={doFinish} style={{flex:1,background:C.amber,color:C.bg,border:'none',borderRadius:11,padding:'13px',fontWeight:700,fontSize:14.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Finish session</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {summaryShown && <SessionDoneSummary sess={sess} profile={profile} stats={computeSessionTotals(sess)} rpe={chRpe} pbHits={pbHits} onClose={()=>{ setSummaryShown(false); onFinish&&onFinish() }}/>}
       {histEx && <ExerciseHistoryModal exerciseName={histEx} clientId={clientId} sessions={sessions} weeks={weeks} programs={programs} onClose={()=>setHistEx(null)}/>}
+      {subEx && <ClientSubModal ex={subEx} allSessions={sessions} programName={programName} onApply={(payload)=>onSubstitute&&onSubstitute(subEx, sess.id, payload)} onClose={()=>setSubEx(null)}/>}
+      {skipPend && <SkipReasonSheet title={skipPend.kind==='set'?'Why skip this set?':'Why skip this exercise?'} onPick={(r)=>{ if(skipPend.kind==='set') skipSetGuided(r); else skipExerciseGuided(r); setSkipPend(null) }} onClose={()=>setSkipPend(null)}/>}
       {demoUrl && <DemoModal url={demoUrl} title="Exercise demo" onClose={()=>setDemoUrl(null)}/>}
     </div>
   )
 }
 
-function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits, updateSession, clientId, clientName }){
+function ClientSessionSummary({ sess, programName, status, onResume, onStart, pbHits, updateSession, clientId, clientName, allSessions=[], onSubstitute, profile }){
   const exs = safeExercises(sess)
   const [mode,setMode] = useState('guided')
   const [restOn,setRestOn] = useState(true)
   const [demoUrl,setDemoUrl]=useState(null)
   const [reqDone,setReqDone]=useState({})
+  const [subEx,setSubEx]=useState(null)
+  const [addOpen,setAddOpen]=useState(false)
+  const [skipPend,setSkipPend]=useState(null)
+  const [finishOpen,setFinishOpen]=useState(false)
+  const addExercise = (payload)=>{ if(!updateSession) return; const nm=((payload&&payload.name)||'').trim(); if(!nm) return; const n=Math.max(1,parseInt(payload.sets)||1); const reps=String((payload&&payload.reps)||''); const match=findExerciseMatch(nm, allSessions); const useName=match||nm; const isNew=!match; const newEx={ id:uid(), name:useName, blockLabel:'', sequenceGroup:'', sequenceType:'single', sequenceOrder:0, isWarmup:false, sets:String(n), reps, load:String((payload&&payload.load)||''), rpe:'', tempo:'', rest:'', notes:'', collect:['reps','load'], sectionName:'', time:'', distance:'', rir:'', perSide:'default', targets:Array.from({length:n},()=>({reps})), targetCols:['reps'], loggedSets:[], client_added:true, pending_approval:isNew, added_at:new Date().toISOString() }; if(isNew){ addApproval({name:nm, client_id:clientId, client_name:clientName, session_id:sess.id}) } updateSession(sess.id, {exercises:[...safeExercises(sess), newEx]}); setAddOpen(false) }
   const main = exs.filter(e=>!e.isWarmup)
   const warm = exs.filter(e=>e.isWarmup)
   const _hasData = (z) => ['completedReps','completedLoad','completedTime','completedDistance','speed','rpm','power','energy','hr','bandColour'].some(k=>z&&z[k]!=null&&String(z[k]).trim()!=='')
@@ -7227,6 +7596,10 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           {programName && <span style={{fontSize:12,color:C.muted}}>{programName}</span>}
           <span style={{display:'flex',alignItems:'center',gap:5,background:`${meta.color}1A`,color:meta.color,fontSize:11,fontWeight:700,padding:'4px 10px',borderRadius:999}}><Icon name={meta.icon} size={12} color={meta.color}/>{meta.label}</span>
         </div>
+        {(sess.duration_seconds||sess.session_rpe) ? (<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+          {sess.duration_seconds ? <span style={{fontSize:11,color:C.muted,background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:'3px 9px'}}>{Math.round(sess.duration_seconds/60)} min</span> : null}
+          {sess.session_rpe ? <span style={{fontSize:11,fontWeight:700,color:C.amber,background:`${C.amber}14`,border:`1px solid ${C.amber}40`,borderRadius:7,padding:'3px 9px'}}>Session RPE {fmtN(sess.session_rpe)}</span> : null}
+        </div>) : null}
       </div>
       {pbHits && pbHits.length>0 && (
         <div style={{background:`${C.gold}12`,border:`1px solid ${C.gold}55`,borderRadius:12,padding:'13px 15px',marginBottom:16}}>
@@ -7277,7 +7650,7 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           const sets=Array.from({length:N},(_,i)=>i+1)
           return (
             <div key={ex.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:11,padding:'12px 14px'}}>
-              <div style={{fontSize:14,fontWeight:600,color:C.white,marginBottom:8}}>{ex.name}</div>
+              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10,marginBottom:8}}><div style={{fontSize:14,fontWeight:600,color:C.white}}>{ex.name}{ex.substituted_from?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.c3,marginTop:2}}>swapped from {ex.substituted_from}</span>:null}{ex.client_added?<span style={{display:'block',fontSize:10,fontWeight:600,color:C.green,marginTop:2}}>added by you</span>:null}{ex.skipped?<span style={{display:'block',fontSize:10,fontWeight:700,color:C.orange,marginTop:2}}>Skipped{ex.skip_reason?` - ${ex.skip_reason}`:''}</span>:null}</div><div style={{display:'flex',gap:6,flexShrink:0}}>{onSubstitute && <button onClick={()=>setSubEx(ex)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:7,padding:'4px 9px',color:C.c3,fontSize:10.5,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>Swap</button>}<button onClick={()=> ex.skipped ? (updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===ex.id?{...e,skipped:false,skip_reason:undefined}:e)})) : setSkipPend({kind:'ex',ex})} style={{background:ex.skipped?`${C.orange}1A`:'transparent',border:`1px solid ${ex.skipped?C.orange:C.border}`,borderRadius:7,padding:'4px 9px',color:ex.skipped?C.orange:C.c3,fontSize:10.5,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>{ex.skipped?'Un-skip':'Skip'}</button></div></div>
               {(()=>{ const meta=getExMeta(ex.name); if(!meta) return null; return (<>
                 {meta.description && <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginBottom:8,whiteSpace:'pre-wrap'}}>{meta.description}</div>}
                 {meta.youtube_url && <button onClick={()=>setDemoUrl(meta.youtube_url)} style={{display:'inline-flex',alignItems:'center',gap:5,background:`${C.c1}1A`,border:`1px solid ${C.c1}55`,borderRadius:7,padding:'4px 10px',color:C.c3,fontSize:11,fontWeight:700,cursor:'pointer',marginBottom:8}}>{'\u25B6'} Watch demo</button>}
@@ -7302,13 +7675,15 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
                   } else {
                     txt=presReps!=null&&presReps!==''?mkReps(presReps):'—'
                   }
-                  return <span key={sn} style={{fontSize:12,fontWeight:700,color:done?C.white:C.faint,background:done?`${C.green}14`:C.ink,border:`1px solid ${done?`${C.green}40`:C.border}`,borderRadius:7,padding:'5px 9px'}}>{txt}</span>
+                  const isSkipped=!!(ls&&ls.skipped)
+                  return <button key={sn} onClick={()=>{ if(isSkipped){ updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===ex.id?{...e,loggedSets:(e.loggedSets||[]).map(z=>z.setNumber===sn?{...z,skipped:false,skip_reason:undefined}:z)}:e)}) } else if(!done){ setSkipPend({kind:'set',exId:ex.id,sn}) } }} style={{fontSize:12,fontWeight:700,color:isSkipped?C.orange:(done?C.white:C.faint),background:isSkipped?`${C.orange}1A`:(done?`${C.green}14`:C.ink),border:`1px solid ${isSkipped?C.orange:(done?`${C.green}40`:C.border)}`,borderRadius:7,padding:'5px 9px',cursor:(isSkipped||!done)?'pointer':'default'}}>{isSkipped?'Skipped':txt}</button>
                 })}
               </div>
             </div>
           )
         })}
       </div>
+      <button onClick={()=>setAddOpen(true)} style={{width:'100%',background:'transparent',border:`1px dashed ${C.border}`,borderRadius:11,padding:'13px',color:C.c3,fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:14}}>+ Add your own exercise</button>
       {warm.length>0 && (
         <div style={{marginTop:18}}>
           <div style={{fontSize:10,fontWeight:700,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>Warm-up / movement prep</div>
@@ -7338,6 +7713,11 @@ function ClientSessionSummary({ sess, programName, status, onResume, onStart, pb
           <div style={{fontSize:10,color:C.faint,textAlign:'center',marginTop:8}}>Tick each round as you go - warm-ups don't count toward your completion %.</div>
         </div>
       )}
+      {subEx && <ClientSubModal ex={subEx} allSessions={allSessions} programName={programName} onApply={(payload)=>onSubstitute&&onSubstitute(subEx, sess.id, payload)} onClose={()=>setSubEx(null)}/>}
+      {addOpen && <AddExerciseModal onAdd={addExercise} onClose={()=>setAddOpen(false)}/>}
+      {status!=='notstarted' && <button onClick={()=>setFinishOpen(true)} style={{width:'100%',marginTop:18,background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'15px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Finish session</button>}
+      {finishOpen && <FinishFlow sess={sess} profile={profile} pbHits={pbHits} updateSession={updateSession} onClose={()=>setFinishOpen(false)}/>}
+      {skipPend && <SkipReasonSheet title={skipPend.kind==='set'?'Why skip this set?':'Why skip this exercise?'} onPick={(r)=>{ if(skipPend.kind==='set'){ updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===skipPend.exId?{...e,loggedSets:(()=>{ const ls=e.loggedSets||[]; const i=ls.findIndex(z=>z.setNumber===skipPend.sn); const entry={...(i>=0?ls[i]:{id:uid(),setNumber:skipPend.sn}),skipped:true,skip_reason:r}; return i>=0?ls.map(z=>z.setNumber===skipPend.sn?entry:z):[...ls,entry] })()}:e)}) } else { updateSession&&updateSession(sess.id,{exercises:safeExercises(sess).map(e=>e.id===skipPend.ex.id?{...e,skipped:true,skip_reason:r,skipped_at:new Date().toISOString()}:e)}) } setSkipPend(null) }} onClose={()=>setSkipPend(null)}/>}
       {demoUrl && <DemoModal url={demoUrl} title="Exercise demo" onClose={()=>setDemoUrl(null)}/>}
     </div>
   )
@@ -7387,6 +7767,42 @@ function StreakHeatmap({ levelByDay, current, longest, total }){
   )
 }
 
+const EQUIPMENT_LIST = [
+  {l:'Barbell', kw:['barbell','bench press','back squat','front squat','deadlift','overhead press','ohp','bent over row','romanian deadlift','rdl','hip thrust','good morning']},
+  {l:'Squat / power rack', kw:['back squat','front squat','rack pull','rack']},
+  {l:'Smith machine', kw:['smith']},
+  {l:'Dumbbells', kw:['dumbbell','db ',' db','goblet']},
+  {l:'Kettlebells', kw:['kettlebell','kb ',' kb','swing']},
+  {l:'Cable machine', kw:['cable','pulldown','pull-down','pushdown','push-down','face pull','tricep pushdown','straight arm']},
+  {l:'Lat pulldown', kw:['lat pulldown','pulldown','pull-down']},
+  {l:'Leg press', kw:['leg press']},
+  {l:'Hack squat', kw:['hack squat']},
+  {l:'Leg curl machine', kw:['leg curl','hamstring curl','lying curl','seated curl']},
+  {l:'Leg extension machine', kw:['leg extension','knee extension']},
+  {l:'Chest press / pec deck', kw:['pec deck','chest press machine','machine chest','pec fly','machine fly']},
+  {l:'Pull-up / chin-up bar', kw:['pull-up','pull up','pullup','chin-up','chin up','chinup','muscle up']},
+  {l:'Dip station', kw:['dip']},
+  {l:'Adjustable bench', kw:['incline','decline','flye','fly']},
+  {l:'Trap / hex bar', kw:['trap bar','hex bar','trap-bar']},
+  {l:'EZ bar', kw:['ez bar','ez-bar','ez curl']},
+  {l:'Resistance bands', kw:['band']},
+  {l:'TRX / suspension', kw:['trx','suspension']},
+  {l:'Sled / prowler', kw:['sled','prowler']},
+  {l:'GHD / glute-ham', kw:['ghd','glute ham','glute-ham','nordic']},
+  {l:'Landmine', kw:['landmine']},
+  {l:'Safety squat bar', kw:['ssb','safety squat','safety bar']},
+  {l:'Plyo box', kw:['box jump','plyo','step up','step-up']},
+  {l:'Medicine / slam ball', kw:['med ball','medicine ball','slam ball','wall ball']},
+  {l:'Rower (erg)', kw:['row erg','rower',' erg','c2 ']},
+  {l:'Assault / air bike', kw:['assault bike','air bike','echo bike','bike erg']},
+  {l:'Treadmill', kw:['treadmill']},
+]
+function exerciseMissingEquip(name, noEquip){
+  if(!name || !Array.isArray(noEquip) || !noEquip.length) return []
+  const n=(' '+name+' ').toLowerCase()
+  return EQUIPMENT_LIST.filter(e=>noEquip.includes(e.l) && e.kw.some(k=>n.includes(k))).map(e=>e.l)
+}
+
 function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracked=0, measurements=[], addMeasurement, deleteMeasurement }){
   const c = client || {}
   const hsInit = (c.health_screen && typeof c.health_screen==='object') ? c.health_screen : {}
@@ -7401,6 +7817,8 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
   const [hsForm, setHsForm] = React.useState(hsInit)
   const [open, setOpen] = React.useState({ personal:true })
   const [saved, setSaved] = React.useState(false)
+  const [favDraft, setFavDraft] = React.useState('')
+  const [lfavDraft, setLfavDraft] = React.useState('')
 
   const setF = (k,v)=> setForm(f=>({...f,[k]:v}))
   const flash = ()=>{ setSaved(true); setTimeout(()=>setSaved(false), 1400) }
@@ -7442,6 +7860,20 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
       {control}
     </div>
   )
+  const arrOf = k => Array.isArray(c[k])?c[k]:[]
+  const toggleArr = (key,val)=>{ const cur=arrOf(key); save({[key]: cur.includes(val)?cur.filter(x=>x!==val):[...cur,val]}) }
+  const addArr = (key,val)=>{ val=(val||'').trim(); if(!val) return; const cur=arrOf(key); if(cur.some(x=>(x||'').toLowerCase()===val.toLowerCase())) return; save({[key]:[...cur,val]}) }
+  const rmArr = (key,val)=>{ save({[key]: arrOf(key).filter(x=>x!==val)}) }
+  const chipEditor = (key,color,draft,setDraft,ph)=>{ const list=arrOf(key); return (
+    <div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>{list.length? list.map(x=>(<span key={x} style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,padding:'5px 9px',borderRadius:8,background:`${color}18`,border:`1px solid ${color}44`,color}}>{x}<button onClick={()=>rmArr(key,x)} style={{background:'none',border:'none',color,cursor:'pointer',fontSize:14,lineHeight:1,padding:0}}>{'\u00D7'}</button></span>)) : <span style={{fontSize:11.5,color:C.faint,fontStyle:'italic'}}>None added yet</span>}</div>
+      <div style={{display:'flex',gap:7}}>
+        <input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'){ addArr(key,draft); setDraft('') } }} placeholder={ph} style={{...inp,flex:1}}/>
+        <button onClick={()=>{ addArr(key,draft); setDraft('') }} style={{background:C.lift,border:`1px solid ${C.border}`,borderRadius:8,padding:'0 14px',color:C.white,fontSize:13,fontWeight:700,cursor:'pointer',flexShrink:0}}>Add</button>
+      </div>
+    </div>
+  )}
+
 
   const yn = (k)=>{ const v=hsForm[k]; return (
     <div style={{display:'flex',gap:6,flexShrink:0}}>
@@ -7508,6 +7940,21 @@ function ClientProfilePage({ client, updateClient, totalDone=0, streak=0, tracke
       {field('Sport / focus', txt('sport','Rugby, general strength, etc.'))}
     </>)}
 
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'4px 16px',marginBottom:14}}>
+      <Toggle value={!!client.wellness_enabled} onChange={v=>save({wellness_enabled:v})} label="Daily readiness check-in" sublabel="Log sleep, energy, soreness, stress and mood each day for your coach"/>
+    </div>
+    {section('gear','dumbbell','Equipment & exercises', <>
+      <div style={{marginBottom:8,fontSize:11.5,color:C.muted,lineHeight:1.5}}>Tick anything you do NOT have at your main gym. Your coach gets flagged if a programmed exercise needs it.</div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:7,marginBottom:18}}>
+        {EQUIPMENT_LIST.map(e=>{ const off=arrOf('no_equipment').includes(e.l); return (
+          <button key={e.l} onClick={()=>toggleArr('no_equipment',e.l)} style={{fontSize:11.5,fontWeight:600,padding:'7px 11px',borderRadius:8,cursor:'pointer',border:`1px solid ${off?C.red:C.border}`,background:off?`${C.red}1A`:'transparent',color:off?C.red:C.muted,display:'flex',alignItems:'center',gap:5}}>{off?<span style={{fontSize:10}}>{'\u2715'}</span>:null}{e.l}</button>
+        )})}
+      </div>
+      <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:7,textTransform:'uppercase',letterSpacing:'0.04em'}}>Favourite exercises</div>
+      {chipEditor('fav_exercises', C.green, favDraft, setFavDraft, 'Add a favourite...')}
+      <div style={{fontSize:11,fontWeight:700,color:C.orange,margin:'16px 0 7px',textTransform:'uppercase',letterSpacing:'0.04em'}}>Least favourite exercises</div>
+      {chipEditor('least_fav_exercises', C.orange, lfavDraft, setLfavDraft, 'Add one you dislike...')}
+    </>)}
     {section('health','alert','Health screen', <>
       <div style={{fontSize:11,color:C.faint,marginBottom:10,lineHeight:1.45}}>A quick safety check so your coach can train you appropriately. Your answers are private to your coach.</div>
       {HS_ITEMS.map(it=>(
@@ -7857,7 +8304,7 @@ function ClientWalkthrough({ onClose }){
   const last = step===steps.length-1
   const cur = steps[step]
   return (
-    <div style={{position:'fixed',inset:0,zIndex:500,background:'rgba(4,7,15,0.9)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.9)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
       <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px 10px'}}>
           <div style={{display:'flex',gap:5}}>{steps.map((_,i)=>(<span key={i} style={{width:i===step?20:7,height:7,borderRadius:99,background:i===step?C.amber:(i<step?`${C.amber}66`:C.lift),transition:'all .2s'}}/>))}</div>
@@ -7871,6 +8318,184 @@ function ClientWalkthrough({ onClose }){
           {step>0 && <button onClick={()=>setStep(step-1)} style={{background:'transparent',border:`1px solid ${C.border}`,borderRadius:11,padding:'13px 18px',color:C.white,fontWeight:700,fontSize:14,cursor:'pointer'}}>Back</button>}
           <button onClick={()=>last?onClose():setStep(step+1)} style={{flex:1,background:C.amber,color:C.bg,border:'none',borderRadius:11,padding:'13px',fontWeight:700,fontSize:14.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>{last?'Let us go':'Next'}</button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function WellnessCheckIn({ clientId, existing, onClose, onDone, canSave=true, date }){
+  const init = existing||{}
+  const [v,setV]=useState({ sleep:init.sleep||0, energy:init.energy||0, soreness:init.soreness||0, stress:init.stress||0, mood:init.mood||0, pain_flag:!!init.pain_flag, notes:init.notes||'' })
+  const set=(k,val)=>setV(p=>({...p,[k]:val}))
+  const METRICS=[ ['sleep','Sleep','Poor','Great'], ['energy','Energy','Low','High'], ['mood','Mood','Low','Great'], ['soreness','Soreness','None','Very sore'], ['stress','Stress','Calm','Stressed'] ]
+  const submit=()=>{ if(canSave) saveWellness(clientId, { sleep:v.sleep||null, energy:v.energy||null, soreness:v.soreness||null, stress:v.stress||null, mood:v.mood||null, pain_flag:v.pain_flag, notes:(v.notes||'').trim()||null }, date); onDone&&onDone() }
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',overflowY:'auto',padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+          <h2 style={{fontSize:19,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>How are you feeling?</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer'}}>Close</button>
+        </div>
+        <div style={{fontSize:12.5,color:C.muted,marginBottom:18}}>Tap a number, 1 (low) to 5 (high).</div>
+        {METRICS.map(([k,label,lo,hi])=>(
+          <div key={k} style={{marginBottom:16}}>
+            <div style={{fontSize:13,fontWeight:700,color:C.white,marginBottom:6}}>{label}</div>
+            <div style={{display:'flex',gap:6}}>{[1,2,3,4,5].map(n=>(<button key={n} onClick={()=>set(k,n)} style={{flex:1,padding:'11px 0',borderRadius:8,border:`1px solid ${v[k]===n?C.amber:C.border}`,background:v[k]===n?C.amber:'transparent',color:v[k]===n?C.bg:C.muted,fontWeight:700,fontSize:13,cursor:'pointer'}}>{n}</button>))}</div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:9.5,color:C.faint,marginTop:4}}><span>{lo}</span><span>{hi}</span></div>
+          </div>
+        ))}
+        <button onClick={()=>set('pain_flag',!v.pain_flag)} style={{width:'100%',display:'flex',alignItems:'center',gap:9,background:v.pain_flag?`${C.orange}18`:C.card,border:`1px solid ${v.pain_flag?C.orange:C.border}`,borderRadius:10,padding:'12px 14px',marginBottom:16,cursor:'pointer'}}>
+          <span style={{width:18,height:18,borderRadius:5,border:`2px solid ${v.pain_flag?C.orange:C.muted}`,background:v.pain_flag?C.orange:'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:C.bg,fontSize:12,fontWeight:900}}>{v.pain_flag?'\u2713':''}</span>
+          <span style={{fontSize:13,fontWeight:600,color:v.pain_flag?C.orange:C.white,textAlign:'left'}}>I have pain or an injury to flag</span>
+        </button>
+        <textarea value={v.notes} onChange={e=>set('notes',e.target.value)} placeholder="Anything else for your coach? (optional)" style={{width:'100%',boxSizing:'border-box',minHeight:60,background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:C.white,fontSize:13,resize:'vertical',marginBottom:16,fontFamily:'inherit'}}/>
+        <button onClick={submit} style={{width:'100%',background:C.amber,color:C.bg,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>{!canSave?'Close':(existing?'Update check-in':'Submit check-in')}</button>
+        {!canSave && <div style={{fontSize:11,color:C.faint,textAlign:'center',marginTop:9}}>Preview - check-ins are not saved</div>}
+      </div>
+    </div>
+  )
+}
+function ReadinessDash({ clients, go }){
+  const enabled = (clients||[]).filter(c=>c.wellness_enabled)
+  const rows = enabled.map(c=>{ const logs=getWellnessFor(c.id,7); const latest=logs[0]; return { c, latest, sc: wellnessScore(latest), logs } }).sort((a,b)=>{ if(a.sc==null) return 1; if(b.sc==null) return -1; return a.sc-b.sc })
+  return (
+    <div style={{padding:20,maxWidth:900,margin:'0 auto'}}>
+      <h1 style={{fontSize:24,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',letterSpacing:'-0.01em',marginBottom:4}}>Readiness</h1>
+      <p style={{fontSize:13,color:C.muted,marginBottom:22}}>Daily wellness check-ins from athletes with readiness enabled. Lowest scores first.</p>
+      {enabled.length===0 ? (
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'30px 22px',textAlign:'center'}}>
+          <div style={{fontSize:15,fontWeight:700,color:C.white,marginBottom:6,fontFamily:'Space Grotesk,sans-serif'}}>No readiness check-ins yet</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:16}}>Turn on the daily readiness check-in for a client from their profile, and their scores will show up here.</div>
+          <Btn label="View clients" onClick={()=>go('clients')}/>
+        </div>
+      ) : (
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {rows.map(({c,latest,sc,logs})=>(
+            <div key={c.id} onClick={()=>go('client',{clientId:c.id})} style={{display:'flex',alignItems:'center',gap:14,background:C.card,border:`1px solid ${latest&&latest.pain_flag?`${C.orange}55`:C.border}`,borderRadius:14,padding:'15px 17px',cursor:'pointer'}}>
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',minWidth:48}}>
+                <span style={{fontSize:24,fontWeight:700,color:sc!=null?trafficColor(sc):C.faint,fontFamily:'Space Grotesk,sans-serif'}}>{sc!=null?sc:'--'}</span>
+                <span style={{fontSize:8.5,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>ready</span>
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:14.5,fontWeight:700,color:C.white}}>{c.name}</span>{latest&&latest.pain_flag&&<span style={{fontSize:10,fontWeight:700,color:C.orange,background:`${C.orange}1A`,borderRadius:6,padding:'2px 7px'}}>PAIN</span>}</div>
+                <div style={{fontSize:11.5,color:C.muted,marginTop:3}}>{latest?`Last check-in ${latest.log_date}`:'No check-ins yet'}</div>
+              </div>
+              <div style={{display:'flex',gap:3,alignItems:'flex-end',height:30}}>{logs.slice(0,7).reverse().map((l,i)=>{ const s2=wellnessScore(l); const h=s2!=null?Math.max(4,Math.round(s2/100*28)):4; return <span key={i} title={l.log_date} style={{width:6,height:h,borderRadius:2,background:s2!=null?trafficColor(s2):C.lift}}/> })}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── CLIENT-INITIATED SUBSTITUTIONS ───────────────────────────────────────────
+let _SUBS = []
+function getSubsForClient(clientId){ return _SUBS.filter(x=>x.client_id===clientId).sort((a,b)=> (a.created_at<b.created_at?1:-1)) }
+async function hydrateSubs(token){ try{ const r=await sb.get('substitutions','select=*&order=created_at.desc&limit=300',token); _SUBS=Array.isArray(r)?r:[] }catch(e){} return _SUBS }
+
+// ─── EXERCISE APPROVALS — client-created exercises awaiting coach review ───────
+let _APPROVALS = []
+async function hydrateApprovals(token){ try{ const r=await sb.get('exercise_approvals','select=*&order=created_at.desc&limit=200',token); _APPROVALS=Array.isArray(r)?r:[] }catch(e){} return _APPROVALS }
+function getPendingApprovals(){ return _APPROVALS.filter(a=>a&&a.status==='pending') }
+// Does this typed name already match a known library exercise? Returns canonical name or null.
+function findExerciseMatch(name, allSessions){
+  const nm=(name||'').trim(); if(!nm) return null
+  const lc=nm.toLowerCase()
+  const canon=resolveExName(nm)
+  if(canon && canon.toLowerCase()!==lc) return canon
+  const lib=getFullExLib(allSessions||[])
+  const exact=lib.find(e=>e.name.toLowerCase()===lc); if(exact) return exact.name
+  const norm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim()
+  const n2=norm(nm)
+  const fz=lib.find(e=>norm(e.name)===n2); if(fz) return fz.name
+  return null
+}
+function addApproval({name, client_id, client_name, session_id}){
+  const nm=(name||'').trim(); if(!nm) return
+  const k=nm.toLowerCase()
+  if(_APPROVALS.some(a=>a.name_key===k && a.status==='pending')) return
+  const row={ id:uid(), name:nm, name_key:k, client_id:client_id||null, client_name:client_name||'', session_id:session_id||null, status:'pending', merged_into:null, created_at:new Date().toISOString(), resolved_at:null }
+  _APPROVALS=[row,..._APPROVALS]
+  try{ fetch(`${SUPABASE_URL}/rest/v1/exercise_approvals`,{method:'POST',headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'},body:JSON.stringify(row)}).catch(()=>{}) }catch(e){}
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+}
+function resolveApproval(name, action, mergeInto){
+  const k=(name||'').toLowerCase()
+  if(action==='merge' && mergeInto){ regMerge([name], mergeInto) }
+  const st = action==='merge' ? 'merged' : (action==='dismiss' ? 'dismissed' : 'approved')
+  _APPROVALS=_APPROVALS.map(a=> (a.name_key===k && a.status==='pending') ? {...a, status:st, merged_into:mergeInto||null, resolved_at:new Date().toISOString()} : a)
+  try{ fetch(`${SUPABASE_URL}/rest/v1/exercise_approvals?name_key=eq.${encodeURIComponent(k)}&status=eq.pending`,{method:'PATCH',headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'},body:JSON.stringify({status:st, merged_into:mergeInto||null, resolved_at:new Date().toISOString()})}).catch(()=>{}) }catch(e){}
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+}
+function saveSub(row){
+  const full={ ...row, created_at:new Date().toISOString() }
+  _SUBS.unshift(full)
+  window.dispatchEvent(new CustomEvent('cgee-reg-changed'))
+  try{ return fetch(`${SUPABASE_URL}/rest/v1/substitutions`, { method:'POST', headers:{...hdrs(CGEE_TOKEN),Prefer:'return=minimal'}, body:JSON.stringify(full) }).catch(()=>{}) }catch(e){ return Promise.resolve() }
+}
+function ClientSubModal({ ex, allSessions, programName, onApply, onClose }){
+  const [search,setSearch]=useState('')
+  const [chosen,setChosen]=useState('')
+  const [reason,setReason]=useState('')
+  const [scope,setScope]=useState('session')
+  const suggestions = React.useMemo(()=>getSubSuggestions(ex.name, allSessions||[]),[ex.name,(allSessions||[]).length])
+  const fullLib = React.useMemo(()=>getFullExLib(allSessions||[]),[(allSessions||[]).length])
+  const q=search.trim().toLowerCase()
+  const filtered = (q ? fullLib.filter(s=>s.name.toLowerCase()!==ex.name.toLowerCase()&&s.name.toLowerCase().includes(q)) : suggestions).slice(0,30)
+  const typedNew = search.trim() && !filtered.some(s=>s.name.toLowerCase()===q)
+  const canSave = chosen.trim() && reason
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+        <div style={{padding:'16px 18px 10px',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div><h2 style={{fontSize:18,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:'0 0 3px'}}>Swap exercise</h2><div style={{fontSize:12,color:C.muted}}>Replacing <span style={{color:C.amber,fontWeight:600}}>{ex.name}</span></div></div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Close</button>
+        </div>
+        <div style={{padding:'4px 18px 8px',overflowY:'auto'}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or type any exercise..." style={{width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,marginBottom:12,fontFamily:'inherit'}}/>
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>{q?'Library matches':'Similar movements'}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:8}}>
+            {typedNew && <button onClick={()=>setChosen(search.trim())} style={{textAlign:'left',display:'flex',alignItems:'center',gap:9,background:chosen===search.trim()?`${C.amber}22`:`${C.amber}12`,border:`1px solid ${chosen===search.trim()?C.amber:`${C.amber}55`}`,borderRadius:9,padding:'11px 12px',cursor:'pointer'}}><span style={{fontSize:17,color:C.amber,fontWeight:700,lineHeight:1}}>+</span><span style={{flex:1,minWidth:0}}><span style={{fontSize:13,fontWeight:700,color:C.amber,display:'block'}}>Add new: "{search.trim()}"</span><span style={{fontSize:10.5,color:C.muted}}>Used now · your coach approves it later</span></span></button>}
+            {filtered.length===0 && !typedNew && <div style={{fontSize:12,color:C.faint,fontStyle:'italic'}}>No similar matches - type any name above.</div>}
+            {filtered.map(sg=>(<button key={sg.name} onClick={()=>{setChosen(sg.name);setSearch('')}} style={{textAlign:'left',display:'flex',alignItems:'center',gap:10,background:chosen===sg.name?`${C.amber}18`:C.card,border:`1px solid ${chosen===sg.name?C.amber:C.border}`,borderRadius:9,padding:'10px 12px',cursor:'pointer'}}><span style={{width:13,height:13,borderRadius:'50%',border:`2px solid ${chosen===sg.name?C.amber:C.faint}`,background:chosen===sg.name?C.amber:'transparent',flexShrink:0}}/><span style={{fontSize:13,fontWeight:600,color:C.white}}>{sg.name}</span>{sg.isLib?<span style={{fontSize:9,color:C.c3,marginLeft:'auto'}}>library</span>:null}</button>))}
+          </div>
+          {chosen?<div style={{fontSize:12,color:C.green,marginBottom:14}}>Swapping to <b>{chosen}</b></div>:null}
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Why are you swapping?</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:16}}>{SUB_REASONS.map(r=>(<button key={r} onClick={()=>setReason(r)} style={{fontSize:11.5,fontWeight:600,padding:'7px 11px',borderRadius:8,cursor:'pointer',border:`1px solid ${reason===r?C.c2:C.border}`,background:reason===r?`${C.c1}22`:'transparent',color:reason===r?C.c3:C.muted}}>{r}</button>))}</div>
+          <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Apply to</div>
+          <div style={{display:'flex',gap:8}}>
+            {[['session','This session only'],['program','Rest of '+(programName||'this program')]].map(([v,l])=>(<button key={v} onClick={()=>setScope(v)} style={{flex:1,fontSize:12,fontWeight:700,padding:'11px 8px',borderRadius:9,cursor:'pointer',border:`1px solid ${scope===v?C.amber:C.border}`,background:scope===v?`${C.amber}18`:'transparent',color:scope===v?C.amber:C.muted}}>{l}</button>))}
+          </div>
+        </div>
+        <div style={{padding:'12px 18px 22px',borderTop:`1px solid ${C.border}`,marginTop:'auto'}}>
+          <button disabled={!canSave} onClick={()=>{ onApply({chosen:chosen.trim(),reason,scope}); onClose() }} style={{width:'100%',background:canSave?C.amber:C.lift,color:canSave?C.bg:C.faint,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:canSave?'pointer':'default',fontFamily:'Space Grotesk,sans-serif'}}>Confirm swap</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AddExerciseModal({ onAdd, onClose }){
+  const [name,setName]=useState(''); const [sets,setSets]=useState('3'); const [reps,setReps]=useState('8'); const [load,setLoad]=useState('')
+  const can=name.trim()
+  const inp={width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'11px 12px',color:C.white,fontSize:14,fontFamily:'inherit'}
+  const lab={fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:5}
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:9500,background:'rgba(4,7,15,0.92)',display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div style={{width:'100%',maxWidth:560,background:C.bg,borderTopLeftRadius:20,borderTopRightRadius:20,border:`1px solid ${C.border}`,padding:'20px 18px 26px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+          <h2 style={{fontSize:18,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif',margin:0}}>Add an exercise</h2>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.muted,fontSize:13,cursor:'pointer',fontWeight:600}}>Close</button>
+        </div>
+        <div style={{marginBottom:14}}><div style={lab}>Exercise name</div><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Cable lateral raise" style={inp} autoFocus/></div>
+        <div style={{display:'flex',gap:10,marginBottom:14}}>
+          <div style={{flex:1}}><div style={lab}>Sets</div><input value={sets} onChange={e=>setSets(e.target.value)} inputMode="numeric" style={inp}/></div>
+          <div style={{flex:1}}><div style={lab}>Reps</div><input value={reps} onChange={e=>setReps(e.target.value)} placeholder="8 or 8-12" style={inp}/></div>
+          <div style={{flex:1}}><div style={lab}>Load</div><input value={load} onChange={e=>setLoad(e.target.value)} placeholder="optional" style={inp}/></div>
+        </div>
+        <p style={{fontSize:11.5,color:C.faint,margin:'0 0 16px',lineHeight:1.5}}>Added to this session only. Your coach will see it, and your logged sets still count toward your history and PBs.</p>
+        <button disabled={!can} onClick={()=>{ onAdd({name,sets,reps,load}) }} style={{width:'100%',background:can?C.amber:C.lift,color:can?C.bg:C.faint,border:'none',borderRadius:12,padding:'14px',fontWeight:700,fontSize:15,cursor:can?'pointer':'default',fontFamily:'Space Grotesk,sans-serif'}}>Add to session</button>
       </div>
     </div>
   )
@@ -7890,6 +8515,10 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const [progressEx, setProgressEx] = useState(null)
   const [showStreak, setShowStreak] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
+  const [wlOpen, setWlOpen] = useState(false)
+  const [wlDate, setWlDate] = useState(null)
+  const [daySel, setDaySel] = useState(null)
+  const [wlTick, setWlTick] = useState(0)
 
   const sessDone = s => { try { return computeSessionStatus(s)==='complete' } catch(e){} return s.status==='completed' }
   const sessSkipped = s => s.status==='skipped'
@@ -7906,6 +8535,20 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
   const viewWeekEnd = new Date(viewWeekStart); viewWeekEnd.setDate(viewWeekStart.getDate()+7)
 
   const currentProgram = programs.find(p=>p.status==='current')
+  const applySubstitution = (ex, sessId, payload) => {
+    const chosen=((payload&&payload.chosen)||'').trim(); const reason=(payload&&payload.reason)||''; const scope=(payload&&payload.scope)||'session'
+    if(!ex||!chosen) return
+    const orig=ex.name; const list=allSessions||sessions
+    const srcSess=list.find(x=>x.id===sessId)||sessions.find(x=>x.id===sessId)
+    const progId=srcSess?srcSess.program_id:null
+    const isNovel = !findExerciseMatch(chosen, list)
+    const stamp={ substituted_from:orig, sub_reason:reason, sub_at:new Date().toISOString(), ...(isNovel?{client_added:true, pending_approval:true}:{}) }
+    const applyTo=(session)=>safeExercises(session).map(e=>{ const hit = scope==='program' ? (!e.isWarmup && resolveExName(e.name)===resolveExName(orig)) : (e.id===ex.id); return hit?{...e,name:chosen,...stamp}:e })
+    if(scope==='program' && progId){ list.filter(z=>z.program_id===progId && (z.id===sessId || computeSessionStatus(z)!=='complete')).forEach(z=>updateSession(z.id,{exercises:applyTo(z)})) }
+    else { const z=list.find(x=>x.id===sessId)||sessions.find(x=>x.id===sessId); if(z) updateSession(z.id,{exercises:applyTo(z)}) }
+    saveSub({ client_id:client.id, program_id:progId, session_id:sessId, original_name:orig, substitute_name:chosen, reason, scope })
+    if(isNovel){ addApproval({name:chosen, client_id:client.id, client_name:client.name, session_id:sessId}) }
+  }
 
   // Dated sessions
   const datedSessions = sessions.map(s => ({sess:s, date:getSessionDate(s, allSessions, weeks, programs)})).filter(x => x.date)
@@ -8009,8 +8652,8 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
               const _exs=safeExercises(sess)
               const _anyLogged=_exs.some(e=>(e.loggedSets||[]).some(ls=>(ls.completedLoad!=null&&String(ls.completedLoad).trim()!=='')||(ls.completedReps!=null&&String(ls.completedReps).trim()!=='')))
               const _st=sessDone(sess)?'complete':_anyLogged?'inprogress':'notstarted'
-              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} clientName={client&&client.name} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
-              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}} updateSession={updateSession} clientId={client.id} clientName={client.name}/>
+              if(guided) return <GuidedSession sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} updateSession={updateSession} initialRest={guidedRest} sessions={allSessions||sessions} weeks={weeks} programs={programs} clientId={client&&client.id} clientName={client&&client.name} onSubstitute={applySubstitution} profile={client} pbHits={getSessionPBs(sess.id, pbs)} onExit={()=>setGuided(false)} onClassic={()=>{setGuided(false);setSessionFull(true)}} onFinish={()=>setGuided(false)}/>
+              if(!sessionFull) return <ClientSessionSummary sess={sess} programName={(programs.find(p=>p.id===sess.program_id)||{}).name||''} status={_st} pbHits={getSessionPBs(sess.id, pbs)} onResume={()=>setSessionFull(true)} onStart={(rest)=>{setGuidedRest(rest!==false);setGuided(true)}} updateSession={updateSession} clientId={client.id} clientName={client.name} allSessions={allSessions||sessions} onSubstitute={applySubstitution} profile={client}/>
               return (
             <SessionDetail sessionId={openSessionId} programId={sess.program_id} clientId={client.id} clients={[client]} programs={programs} weeks={weeks} sessions={allSessions} updateSession={updateSession} saving={false} clientMode={true}
               messages={messages} addMessage={addMessage} replyMessage={replyMessage} markMsgRead={markMsgRead} markMsgActioned={markMsgActioned} editMessage={editMessage}
@@ -8028,6 +8671,48 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
     <div style={{background:C.bg,minHeight:'100vh',color:C.white,fontSize:14}}>
       <PreviewBanner client={client} onExit={onExit} isRealClient={isRealClient}/>
       {(showGuide || (isRealClient && !client.onboarded)) && <ClientWalkthrough onClose={()=>{ setShowGuide(false); if(isRealClient && !client.onboarded){ try{ updateClient(client.id,{onboarded:true}) }catch(e){} } }}/>}
+{wlOpen && <WellnessCheckIn clientId={client.id} date={wlDate} existing={wlDate?getWellnessOn(client.id,wlDate):getWellnessToday(client.id)} canSave={isRealClient} onClose={()=>{setWlOpen(false);setWlDate(null)}} onDone={()=>{ setWlOpen(false); setWlDate(null); setWlTick(t=>t+1) }}/>}
+{daySel && (()=>{
+  const dStr = daySel.date.toISOString().split('T')[0]
+  const w = getWellnessOn(client.id, dStr); const sc = wellnessScore(w)
+  const sess = daySel.sessId ? ((allSessions||sessions).find(x=>x.id===daySel.sessId)) : null
+  const isFuture = daySel.date > todayStart
+  const canLog = client.wellness_enabled && isRealClient && !isFuture
+  return (
+    <div onClick={()=>setDaySel(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:9500,display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.ink,borderTopLeftRadius:20,borderTopRightRadius:20,padding:'20px 20px 30px',width:'100%',maxWidth:480,border:`1px solid ${C.border}`,maxHeight:'80vh',overflowY:'auto'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+          <span style={{fontSize:16,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>{daySel.date.toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'})}{daySel.isToday?' · Today':''}</span>
+          <button onClick={()=>setDaySel(null)} style={{background:'none',border:'none',color:C.muted,fontSize:24,cursor:'pointer',lineHeight:1}}>×</button>
+        </div>
+        <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Session</div>
+        {sess ? (
+          <div onClick={()=>{ const t=daySel.isToday; setDaySel(null); openSess(sess.id, t) }} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'14px 16px',marginBottom:20,cursor:'pointer'}}>
+            <div style={{fontSize:15,fontWeight:700,color:C.white,marginBottom:3}}>{sess.name}</div>
+            <div style={{fontSize:12,fontWeight:600,color: daySel.done?C.green: daySel.inProgress?C.orange: daySel.skipped?C.muted: daySel.missed?C.red: C.amber}}>{daySel.done?'Completed':daySel.inProgress?'In progress':daySel.skipped?'Skipped':daySel.missed?'Missed':'Scheduled'} · tap to open</div>
+          </div>
+        ) : <div style={{fontSize:12.5,color:C.dim,fontStyle:'italic',marginBottom:20}}>No session scheduled.</div>}
+        <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Wellness</div>
+        {w ? (
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'14px 16px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:14}}>
+              <span style={{fontSize:26,fontWeight:700,color:sc!=null?trafficColor(sc):C.faint,fontFamily:'Space Grotesk,sans-serif',lineHeight:1}}>{sc!=null?sc:'--'}</span>
+              <div style={{fontSize:11.5,color:C.muted,lineHeight:1.7}}>Sleep {w.sleep||'-'} · Energy {w.energy||'-'} · Soreness {w.soreness||'-'} · Stress {w.stress||'-'} · Mood {w.mood||'-'}{w.pain_flag?'  ·  ⚠ pain flagged':''}</div>
+            </div>
+            {w.notes && <div style={{fontSize:12,color:C.dim,fontStyle:'italic',marginTop:9}}>"{w.notes}"</div>}
+            {canLog && <button onClick={()=>{ setWlDate(dStr); setDaySel(null); setWlOpen(true) }} style={{marginTop:11,background:'none',border:'none',color:C.c3,fontSize:12,fontWeight:700,cursor:'pointer',padding:0}}>Edit check-in</button>}
+          </div>
+        ) : isFuture ? (
+          <div style={{fontSize:12.5,color:C.dim,fontStyle:'italic'}}>Future day — nothing logged yet.</div>
+        ) : canLog ? (
+          <button onClick={()=>{ setWlDate(dStr); setDaySel(null); setWlOpen(true) }} style={{width:'100%',background:`${C.c1}14`,border:`1px solid ${C.c1}45`,borderRadius:12,padding:'13px',color:C.c3,fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>+ Log wellness for this day</button>
+        ) : (
+          <div style={{fontSize:12.5,color:C.dim,fontStyle:'italic'}}>No check-in logged{client.wellness_enabled?'':' · wellness is off'}.</div>
+        )}
+      </div>
+    </div>
+  )
+})()}
       <div style={{maxWidth:560, margin:'0 auto', padding:'20px 16px 96px'}}>
 
         {/* ────── HOME ────── */}
@@ -8043,6 +8728,18 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
               <span style={{fontSize:12.5,color:C.orange,fontWeight:600}}>Pain flagged — train within comfort and log anything that bothers you.</span>
             </div>
           )}
+
+          {client.wellness_enabled && (()=>{ const w=getWellnessToday(client.id); const sc=wellnessScore(w); return w ? (
+            <div onClick={()=>setWlOpen(true)} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:'14px 16px',marginBottom:18,cursor:'pointer'}}>
+              <div><div style={{fontSize:13,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>Readiness logged today</div><div style={{fontSize:11.5,color:C.muted,marginTop:2}}>Tap to update</div></div>
+              {sc!=null && <div style={{display:'flex',flexDirection:'column',alignItems:'center'}}><span style={{fontSize:20,fontWeight:700,color:trafficColor(sc),fontFamily:'Space Grotesk,sans-serif'}}>{sc}</span><span style={{fontSize:9,color:C.faint,textTransform:'uppercase',letterSpacing:'0.08em'}}>ready</span></div>}
+            </div>
+          ) : (
+            <button onClick={()=>setWlOpen(true)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,background:`${C.c1}14`,border:`1px solid ${C.c1}45`,borderRadius:14,padding:'15px 16px',marginBottom:18,cursor:'pointer',textAlign:'left'}}>
+              <div><div style={{fontSize:13.5,fontWeight:700,color:C.white,fontFamily:'Space Grotesk,sans-serif'}}>How are you feeling today?</div><div style={{fontSize:11.5,color:C.c3,marginTop:2}}>Quick readiness check-in</div></div>
+              <span style={{fontSize:22,color:C.c3,lineHeight:1}}>›</span>
+            </button>
+          ) })()}
 
           {/* Stat cards: weekly ring + streak */}
           <div style={{display:'flex',gap:10,marginBottom:22}}>
@@ -8109,13 +8806,13 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
                 const statusCol = d.done ? C.green : d.inProgress ? C.orange : d.missed ? C.red : null
                 const bg = statusCol || (d.isToday ? `${C.amber}1A` : 'transparent')
                 const bd = statusCol || (d.isToday ? C.amber : d.hasSession ? C.lift : C.border)
-                const numCol = statusCol ? C.bg : d.isToday ? C.amber : d.skipped ? C.faint : d.hasSession ? C.white : C.faint
+                const numCol = statusCol ? C.bg : d.isToday ? C.amber : d.skipped ? C.dim : d.hasSession ? C.white : C.dim
                 const dot = statusCol ? null : d.skipped ? C.muted : (d.hasSession && !d.isPast) ? C.c2 : null
                 return (
-                  <div key={i} onClick={()=>{ if(d.sessId) openSess(d.sessId,false) }} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:d.hasSession?'pointer':'default'}}>
-                    <span style={{fontSize:10,fontWeight:700,color:d.isToday?C.amber:C.faint,letterSpacing:'0.04em'}}>{d.label}</span>
+                  <div key={i} onClick={()=>setDaySel(d)} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer'}}>
+                    <span style={{fontSize:10,fontWeight:700,color:d.isToday?C.amber:C.muted,letterSpacing:'0.04em'}}>{d.label}</span>
                     <div style={{width:'100%',aspectRatio:'1',maxWidth:42,borderRadius:10,background:bg,border:`1.5px solid ${bd}`,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
-                      {d.done ? <Icon name="check" size={16} color={C.bg}/> : d.skipped ? <span style={{fontSize:14,fontWeight:700,color:C.faint}}>–</span> : <span style={{fontSize:13,fontWeight:700,color:numCol}}>{d.num}</span>}
+                      {d.done ? <Icon name="check" size={16} color={C.bg}/> : d.skipped ? <span style={{fontSize:14,fontWeight:700,color:C.dim}}>–</span> : <span style={{fontSize:13,fontWeight:700,color:numCol}}>{d.num}</span>}
                       {dot && <span style={{position:'absolute',bottom:5,width:4,height:4,borderRadius:'50%',background:dot}}/>}
                     </div>
                   </div>
@@ -8648,6 +9345,9 @@ function MainApp({ session, onSignOut }) {
         await hydrateExMeta(token)
         await hydrateExPNotes(token)
         await hydrateVideoReqs(token)
+        await hydrateWellness(token)
+        await hydrateSubs(token)
+        await hydrateApprovals(token)
         const [c,p,w,s,m,g,fl,ann,msgs,chts,chmsgs,chrd,tpl,cprof] = await Promise.all([
           sb.get('clients','select=*',token), sb.get('programs','select=*',token),
           sb.get('program_weeks','select=*',token), sb.get('sessions','select=*',token),
@@ -8700,6 +9400,25 @@ function MainApp({ session, onSignOut }) {
       setLoading(false)
     })()
   },[])
+
+  // Lightweight near-realtime: poll conversational surfaces so chats + notes
+  // update without a manual reload (REST architecture, no websockets).
+  useEffect(()=>{
+    if(!token) return
+    const poll = async()=>{
+      if(typeof document!=='undefined' && document.visibilityState && document.visibilityState!=='visible') return
+      try{
+        const [cm, sm] = await Promise.all([
+          sb.get('chat_messages','select=*',token).catch(()=>null),
+          sb.get('session_messages','select=*',token).catch(()=>null),
+        ])
+        if(Array.isArray(cm)) setChatMessages(cm)
+        if(Array.isArray(sm)) setMessages(sm)
+      }catch(e){}
+    }
+    const iv = setInterval(poll, 20000)
+    return ()=>clearInterval(iv)
+  },[token])
 
   useEffect(()=>{
     programs.forEach(prog=>{
@@ -8948,6 +9667,7 @@ function MainApp({ session, onSignOut }) {
             {['templates','templates_program','templates_session','templates_scheme','templates_labels','name_convention'].includes(nav.view) && <TemplatesView sessions={sessions} programs={programs} weeks={weeks} clients={clients} addProgram={props.addProgram} addWeek={props.addWeek} addSession={props.addSession} go={go} templates={templates} addTemplate={addTemplate} deleteTemplate={deleteTemplate} updateTemplate={updateTemplate} initialTab={nav.view==='templates_session'?'session':nav.view==='templates_scheme'?'rep_scheme':nav.view==='templates_labels'?'label':'program'}/>}
             {nav.view==='compliance'          && <CompliancePage {...props}/>}
             {nav.view==='alerts'               && <AlertsPage {...props}/>}
+            {nav.view==='readiness_dash'       && <ReadinessDash clients={clients} go={go}/>}
             {nav.view==='programs_list'        && <ProgramsListPage {...props}/>}
             {nav.view==='sessions_list'        && <SessionsListPage {...props}/>}
             {nav.view==='lb_strength'          && <StrengthLeaderboard {...props}/>}
@@ -8975,7 +9695,7 @@ function MainApp({ session, onSignOut }) {
             {nav.view==='permissions'          && <CoachesAdminPage/>}
             {nav.view==='direct_messages'      && <ChatsPage mode="dm" chats={chats} chatMessages={chatMessages} clients={clients} addChat={addChat} addChatMessage={addChatMessage} deleteChat={deleteChat} unreadFor={(id)=>chatUnread(id,'coach')} markChatRead={(id)=>markChatRead(id,'coach')}/>}
             {nav.view==='group_chats'          && <ChatsPage mode="group" chats={chats} chatMessages={chatMessages} clients={clients} addChat={addChat} addChatMessage={addChatMessage} deleteChat={deleteChat} unreadFor={(id)=>chatUnread(id,'coach')} markChatRead={(id)=>markChatRead(id,'coach')}/>}
-            {!['overview','dashboard','clients','client','editclient','program','session','library','cleanup','import','calendar','templates','compliance','alerts','programs_list','sessions_list','lb_strength','lb_attendance','lb_wellness','lb_sprint','injuries','monitoring','athlete_reports','compliance_reports','export_centre','testing_reports','groups','events','announcements','team_updates','integrations','wearables','connected_apps','settings','db_tools','lbs_convert','coaches','permissions','direct_messages','group_chats','templates_program','templates_session','templates_scheme','templates_labels'].includes(nav.view)&&(<ComingSoon view={nav.view} go={go}/>)}
+            {!['overview','dashboard','clients','client','editclient','program','session','library','cleanup','import','calendar','templates','compliance','alerts','readiness_dash','programs_list','sessions_list','lb_strength','lb_attendance','lb_wellness','lb_sprint','injuries','monitoring','athlete_reports','compliance_reports','export_centre','testing_reports','groups','events','announcements','team_updates','integrations','wearables','connected_apps','settings','db_tools','lbs_convert','coaches','permissions','direct_messages','group_chats','templates_program','templates_session','templates_scheme','templates_labels'].includes(nav.view)&&(<ComingSoon view={nav.view} go={go}/>)}
           </ErrorBoundary>
         </div>
       </div>
