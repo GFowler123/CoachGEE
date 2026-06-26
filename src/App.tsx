@@ -1282,6 +1282,27 @@ function Dashboard({ clients, programs, weeks, sessions, go, messages, subs, mar
       onClick: null
     })
   }
+  const pendingApprovals = getPendingApprovals()
+  if(pendingApprovals.length > 0) {
+    priorities.push({
+      kind:'approval', icon:'clipboard',
+      title: `${pendingApprovals.length} new exercise${pendingApprovals.length!==1?'s':''} to review`,
+      meta: pendingApprovals[0] ? `Added by ${pendingApprovals[0].client_name||'a client'}` : '',
+      color: C.amber,
+      onClick: () => go('library')
+    })
+  }
+  const wellnessFlags = activeClients.map(c=>{ const w=getWellnessFor(c.id,3)[0]; if(!w) return null; const sc=wellnessScore(w); if(w.pain_flag) return {c, kind:'pain'}; if(sc!=null && sc<40) return {c, kind:'low'}; return null }).filter(Boolean)
+  if(wellnessFlags.length > 0) {
+    const f0=wellnessFlags[0]
+    priorities.push({
+      kind:'wellness', icon:'flag',
+      title: `${wellnessFlags.length} readiness flag${wellnessFlags.length!==1?'s':''}`,
+      meta: f0 ? `${f0.c.name}: ${f0.kind==='pain'?'pain flagged':'low readiness'}` : '',
+      color: C.red,
+      onClick: () => go('client', {clientId:f0.c.id})
+    })
+  }
   if(upcoming.length > 0) {
     const todayCount = upcoming.filter(u=>{
       const d = u.date; const ts = todayStart.getTime()
@@ -1822,7 +1843,7 @@ function ClientAccessPanel({ client, updateClient }) {
     </Card>
   )
 }
-function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram, updateProgram, deleteProgram, saving, go }) {
+function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram, updateProgram, deleteProgram, saving, go, updateClient }) {
   const client = clients.find(c=>c.id===clientId)
   const clientProgs = [...programs.filter(p=>p.client_id===clientId)]
     .sort((a,b)=>{
@@ -1894,7 +1915,7 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
           </div>
         </Panel>
       ) })()}
-      {(client.wellness_enabled || getWellnessFor(client.id,1).length>0) && (()=>{ const logs=getWellnessFor(client.id,7); const latest=logs[0]; const sc=wellnessScore(latest); const recentRpe=sessions.filter(x=>x.client_id===client.id&&x.session_rpe).sort((a,b)=>new Date(b.completed_at||0)-new Date(a.completed_at||0)).slice(0,5); return (
+      {(()=>{ const logs=getWellnessFor(client.id,7); const latest=logs[0]; const sc=wellnessScore(latest); const recentRpe=sessions.filter(x=>x.client_id===client.id&&x.session_rpe).sort((a,b)=>new Date(b.completed_at||0)-new Date(a.completed_at||0)).slice(0,5); return (
         <Panel style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
             <span style={{fontSize:13,fontWeight:700,color:C.white,textTransform:'uppercase',letterSpacing:'0.05em',fontFamily:'Space Grotesk,sans-serif'}}>Readiness</span>
@@ -1911,8 +1932,13 @@ function ClientDetail({ clientId, clients, programs, weeks, sessions, addProgram
                 <span style={{fontSize:10.5,color:C.muted}}>Last 7 check-ins, most recent {latest.log_date}</span>
               </div>
             </div>
-          ) : (
+          ) : client.wellness_enabled ? (
             <p style={{fontSize:12.5,color:C.muted,fontStyle:'italic'}}>Readiness enabled, no check-ins logged yet.</p>
+          ) : (
+            <div>
+              <p style={{fontSize:12.5,color:C.muted,fontStyle:'italic',marginBottom:10}}>Wellness check-ins are off for {client.name}. Turn them on so they can log daily readiness, sleep, soreness and pain from their app.</p>
+              {updateClient && <button onClick={()=>updateClient(client.id,{wellness_enabled:true})} style={{background:C.amber,color:C.bg,border:'none',borderRadius:8,padding:'9px 16px',fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'Space Grotesk,sans-serif'}}>Enable wellness check-ins</button>}
+            </div>
           )}
           {recentRpe.length>0 && <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
             <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>Recent session effort</div>
@@ -8404,7 +8430,7 @@ function ClientSubModal({ ex, allSessions, programName, onApply, onClose }){
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or type any exercise..." style={{width:'100%',boxSizing:'border-box',background:C.card,border:`1px solid ${C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,marginBottom:12,fontFamily:'inherit'}}/>
           <div style={{fontSize:10.5,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:7}}>{q?'Library matches':'Similar movements'}</div>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:8}}>
-            {typedNew && <button onClick={()=>setChosen(search.trim())} style={{textAlign:'left',background:chosen===search.trim()?`${C.amber}18`:C.card,border:`1px solid ${chosen===search.trim()?C.amber:C.border}`,borderRadius:9,padding:'10px 12px',color:C.white,fontSize:13,fontWeight:600,cursor:'pointer'}}>Use "{search.trim()}"</button>}
+            {typedNew && <button onClick={()=>setChosen(search.trim())} style={{textAlign:'left',display:'flex',alignItems:'center',gap:9,background:chosen===search.trim()?`${C.amber}22`:`${C.amber}12`,border:`1px solid ${chosen===search.trim()?C.amber:`${C.amber}55`}`,borderRadius:9,padding:'11px 12px',cursor:'pointer'}}><span style={{fontSize:17,color:C.amber,fontWeight:700,lineHeight:1}}>+</span><span style={{flex:1,minWidth:0}}><span style={{fontSize:13,fontWeight:700,color:C.amber,display:'block'}}>Add new: "{search.trim()}"</span><span style={{fontSize:10.5,color:C.muted}}>Used now · your coach approves it later</span></span></button>}
             {filtered.length===0 && !typedNew && <div style={{fontSize:12,color:C.faint,fontStyle:'italic'}}>No similar matches - type any name above.</div>}
             {filtered.map(sg=>(<button key={sg.name} onClick={()=>{setChosen(sg.name);setSearch('')}} style={{textAlign:'left',display:'flex',alignItems:'center',gap:10,background:chosen===sg.name?`${C.amber}18`:C.card,border:`1px solid ${chosen===sg.name?C.amber:C.border}`,borderRadius:9,padding:'10px 12px',cursor:'pointer'}}><span style={{width:13,height:13,borderRadius:'50%',border:`2px solid ${chosen===sg.name?C.amber:C.faint}`,background:chosen===sg.name?C.amber:'transparent',flexShrink:0}}/><span style={{fontSize:13,fontWeight:600,color:C.white}}>{sg.name}</span>{sg.isLib?<span style={{fontSize:9,color:C.c3,marginLeft:'auto'}}>library</span>:null}</button>))}
           </div>
@@ -8487,11 +8513,13 @@ function ClientPreviewApp({ client, updateClient, sessions, allSessions, program
     const orig=ex.name; const list=allSessions||sessions
     const srcSess=list.find(x=>x.id===sessId)||sessions.find(x=>x.id===sessId)
     const progId=srcSess?srcSess.program_id:null
-    const stamp={ substituted_from:orig, sub_reason:reason, sub_at:new Date().toISOString() }
+    const isNovel = !findExerciseMatch(chosen, list)
+    const stamp={ substituted_from:orig, sub_reason:reason, sub_at:new Date().toISOString(), ...(isNovel?{client_added:true, pending_approval:true}:{}) }
     const applyTo=(session)=>safeExercises(session).map(e=>{ const hit = scope==='program' ? (!e.isWarmup && resolveExName(e.name)===resolveExName(orig)) : (e.id===ex.id); return hit?{...e,name:chosen,...stamp}:e })
     if(scope==='program' && progId){ list.filter(z=>z.program_id===progId && (z.id===sessId || computeSessionStatus(z)!=='complete')).forEach(z=>updateSession(z.id,{exercises:applyTo(z)})) }
     else { const z=list.find(x=>x.id===sessId)||sessions.find(x=>x.id===sessId); if(z) updateSession(z.id,{exercises:applyTo(z)}) }
     saveSub({ client_id:client.id, program_id:progId, session_id:sessId, original_name:orig, substitute_name:chosen, reason, scope })
+    if(isNovel){ addApproval({name:chosen, client_id:client.id, client_name:client.name, session_id:sessId}) }
   }
 
   // Dated sessions
